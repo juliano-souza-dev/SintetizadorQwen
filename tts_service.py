@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import traceback
+import time
 import uuid
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
@@ -169,6 +170,7 @@ class TTSService:
         output_path: str,
         temperature: float = 0.65,
         checkpoint: Callable[[], None] | None = None,
+        progress_callback: Callable[[dict], None] | None = None,
     ) -> str:
         if not ref_audio_path or not os.path.exists(ref_audio_path):
             raise ValueError(
@@ -182,6 +184,7 @@ class TTSService:
 
         segmentos_audio = []
         taxa_amostragem = 16000
+        chunk_history: list[dict] = []
 
         try:
             for idx, chunk in enumerate(chunks, 1):
@@ -199,6 +202,26 @@ class TTSService:
                     else "Portuguese"
                 )
                 pausa_ms = chunk.get("pause_after_ms", 150)
+                chunk_started_at = datetime.now(UTC).isoformat()
+                chunk_started_monotonic = time.monotonic()
+                remaining_chars = sum(
+                    len(str(item.get("text", "")).strip())
+                    for item in chunks[idx - 1:]
+                    if isinstance(item, dict)
+                )
+                if progress_callback:
+                    progress_callback({
+                        "phase": "synthesizing",
+                        "event": "chunk_started",
+                        "current_chunk": idx,
+                        "total_chunks": len(chunks),
+                        "completed_chunks": idx - 1,
+                        "chunk_text": raw_text,
+                        "chunk_chars": len(raw_text),
+                        "remaining_chars": remaining_chars,
+                        "chunk_started_at": chunk_started_at,
+                        "chunk_history": list(chunk_history),
+                    })
 
                 texto_chunk = self.limpar_e_otimizar_texto(raw_text)
                 texto_chunk = self.aplicar_dicionario_fonetico(texto_chunk)
@@ -217,6 +240,11 @@ class TTSService:
                         temperature=temperature,
                     )
 
+                chunk_duration = time.monotonic() - chunk_started_monotonic
+                chunk_history.append({
+                    "text_chars": len(texto_chunk),
+                    "duration_seconds": round(chunk_duration, 3),
+                })
                 taxa_amostragem = sr
                 audio_array = wavs[0]
                 segmentos_audio.append(audio_array)
@@ -231,6 +259,33 @@ class TTSService:
                     segmentos_audio.append(silencio)
 
                 del wavs
+                if progress_callback:
+                    progress_callback({
+                        "phase": "synthesizing",
+                        "event": "chunk_completed",
+                        "current_chunk": idx,
+                        "total_chunks": len(chunks),
+                        "completed_chunks": idx,
+                        "chunk_text": raw_text,
+                        "chunk_chars": len(texto_chunk),
+                        "remaining_chars": sum(
+                            len(str(item.get("text", "")).strip())
+                            for item in chunks[idx:]
+                            if isinstance(item, dict)
+                        ),
+                        "last_chunk_duration_seconds": round(chunk_duration, 3),
+                        "chunk_history": list(chunk_history),
+                    })
+
+            if progress_callback:
+                progress_callback({
+                    "phase": "finalizing",
+                    "event": "assembling_audio",
+                    "current_chunk": len(chunks),
+                    "total_chunks": len(chunks),
+                    "completed_chunks": len(chunks),
+                    "chunk_history": list(chunk_history),
+                })
 
             if not segmentos_audio:
                 raise ValueError("Nenhum áudio gerado a partir dos chunks.")
