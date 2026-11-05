@@ -34,6 +34,7 @@ class JobRepository(Protocol):
     ) -> Job | None: ...
     def heartbeat(self, *, job_id: str, worker_id: str, now: datetime) -> bool: ...
     def cancellation_requested(self, *, job_id: str, worker_id: str) -> bool: ...
+    def update_progress(self, *, job_id: str, worker_id: str, progress_data: dict[str, Any]) -> bool: ...
     def succeed(
         self, *, job_id: str, worker_id: str, output: dict[str, Any], now: datetime
     ) -> bool: ...
@@ -65,6 +66,14 @@ class JobExecution:
             job_id=self.job_id, worker_id=self._worker_id
         ):
             raise JobCancelled()
+
+    def report_progress(self, progress_data: dict[str, Any]) -> None:
+        if not self._repository.update_progress(
+            job_id=self.job_id,
+            worker_id=self._worker_id,
+            progress_data=progress_data,
+        ):
+            raise RuntimeError("Não foi possível atualizar o progresso: lease perdido ou job encerrado.")
 
 
 class PersistentWorker:
