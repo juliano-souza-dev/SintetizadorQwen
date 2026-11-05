@@ -47,6 +47,21 @@ class JobLifecycleTests(unittest.TestCase):
         self.assertEqual(self.repository.get(str(job.id)).status, "failed")
         self.assertIsNone(self.repository.claim_next(worker_id="worker-a", now=self.now()))
 
+    def test_permanent_failure_does_not_schedule_retry(self) -> None:
+        job = self.repository.enqueue(kind="tts_generate", input={}, max_attempts=3)
+        self.repository.claim_next(worker_id="worker-a", now=self.now())
+
+        self.assertTrue(self.repository.fail_permanently(
+            job_id=str(job.id),
+            worker_id="worker-a",
+            error_message="inference inactivity timeout",
+            now=self.now(),
+        ))
+        failed = self.repository.get(str(job.id))
+        self.assertEqual(failed.status, "failed")
+        self.assertIn("inactivity timeout", failed.error_message)
+        self.assertIsNone(self.repository.claim_next(worker_id="worker-a", now=self.now()))
+
     def test_abandoned_job_is_released_only_after_lease_expiry(self) -> None:
         job = self.repository.enqueue(kind="tts_generate", input={}, max_attempts=2)
         claimed_at = self.now()
