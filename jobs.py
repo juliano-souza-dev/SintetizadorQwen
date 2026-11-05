@@ -24,3 +24,5 @@ class Job:
     finished_at: datetime | None = None
     heartbeat_at: datetime | None = None
     cancel_requested_at: datetime | None = None
+    progress: dict[str, Any] | None = None
+    deletion_requested: bool = False

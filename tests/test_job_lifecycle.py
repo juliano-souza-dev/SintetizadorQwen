@@ -104,6 +104,36 @@ class JobLifecycleTests(unittest.TestCase):
         self.assertEqual(cancelled.status, "cancelled")
         self.assertIsNone(self.repository.claim_next(worker_id="worker-a", now=self.now()))
 
+    def test_progress_is_persisted_without_overwriting_job_output(self) -> None:
+        job = self.repository.enqueue(kind="tts_generate", input={})
+        self.repository.claim_next(worker_id="worker-a", now=self.now())
+        progress = {"phase": "synthesizing", "current_chunk": 2, "total_chunks": 5, "chunk_history": [{"text_chars": 20, "duration_seconds": 8.5}]}
+        self.assertTrue(self.repository.update_progress(job_id=str(job.id), worker_id="worker-a", progress_data=progress))
+        updated = self.repository.get(str(job.id))
+        self.assertEqual(updated.progress, progress)
+        self.assertIsNone(updated.output)
+
+    def test_deleting_running_job_requests_cancellation_then_allows_removal(self) -> None:
+        job = self.repository.enqueue(kind="tts_generate", input={})
+        self.repository.claim_next(worker_id="worker-a", now=self.now())
+        requested = self.repository.request_deletion(job_id=str(job.id), now=self.now())
+        self.assertEqual(requested.status, "running")
+        self.assertTrue(requested.deletion_requested)
+        self.assertTrue(self.repository.cancellation_requested(job_id=str(job.id), worker_id="worker-a"))
+        self.assertTrue(self.repository.cancel(job_id=str(job.id), worker_id="worker-a", now=self.now()))
+        cancelled = self.repository.get(str(job.id))
+        self.assertEqual(cancelled.status, "cancelled")
+        self.assertTrue(cancelled.deletion_requested)
+        self.assertTrue(self.repository.delete_job(job_id=str(job.id)))
+        self.assertIsNone(self.repository.get(str(job.id)))
+
+    def test_queued_job_deletion_removes_it_without_worker(self) -> None:
+        job = self.repository.enqueue(kind="tts_generate", input={})
+        requested = self.repository.request_deletion(job_id=str(job.id), now=self.now())
+        self.assertEqual(requested.status, "cancelled")
+        self.assertTrue(requested.deletion_requested)
+        self.assertTrue(self.repository.delete_job(job_id=str(job.id)))
+        self.assertIsNone(self.repository.get(str(job.id)))
     def test_idempotency_key_returns_existing_job(self) -> None:
         first = self.repository.enqueue(
             kind="tts_generate", input={"text": "first"}, idempotency_key="request-1"
