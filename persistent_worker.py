@@ -221,13 +221,13 @@ class PersistentWorker:
         except PermanentJobError as error:
             error_trace = traceback.format_exc()
             error_details = (
-                f"Fase: {phase}\\n"
-                f"Tipo: {type(error).__name__}\\n"
-                f"Erro permanente: {error}\\n\\n"
-                f"Traceback completo:\\n{error_trace}"
+                f"Fase: {phase}\n"
+                f"Tipo: {type(error).__name__}\n"
+                f"Erro permanente: {error}\n\n"
+                f"Traceback completo:\n{error_trace}"
             )
             self._logger.error(
-                "JOB_PERMANENT_FAILURE id=%s phase=%s error=%s\\n%s",
+                "JOB_PERMANENT_FAILURE id=%s phase=%s error=%s\n%s",
                 job_id, phase, error, error_trace,
             )
             try:
