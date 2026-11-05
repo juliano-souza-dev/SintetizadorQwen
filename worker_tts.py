@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import logging
+import faulthandler
+import threading
+import warnings
 import os
 from pathlib import Path
 import signal
@@ -36,6 +39,36 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger("worker_tts")
+
+# Captura warnings Python e falhas fatais nativas (ex.: crash em extensão C/CUDA).
+warnings.simplefilter("default")
+logging.captureWarnings(True)
+_FATAL_LOG_HANDLE = open(BASE_DIR / "worker_fatal.log", "a", encoding="utf-8")
+faulthandler.enable(file=_FATAL_LOG_HANDLE, all_threads=True)
+
+
+def _log_uncaught_exception(exc_type, exc_value, exc_traceback) -> None:
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        return
+    logger.critical(
+        "EXCEÇÃO NÃO CAPTURADA NO PROCESSO WORKER",
+        exc_info=(exc_type, exc_value, exc_traceback),
+    )
+
+
+sys.excepthook = _log_uncaught_exception
+
+
+def _log_thread_exception(args) -> None:
+    logger.critical(
+        "EXCEÇÃO NÃO CAPTURADA NA THREAD %s",
+        args.thread.name if args.thread else "desconhecida",
+        exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+    )
+
+
+threading.excepthook = _log_thread_exception
 
 
 def main() -> None:
