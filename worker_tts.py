@@ -31,7 +31,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[
-        logging.FileHandler("worker_tts.log", encoding="utf-8"),
+        logging.FileHandler(BASE_DIR / "worker_tts.log", encoding="utf-8"),
         logging.StreamHandler(sys.stdout),
     ],
 )
@@ -42,7 +42,7 @@ def main() -> None:
     logger.info("=== A iniciar Worker TTS Dedicado ===")
 
     # Instancia o repositório durável partilhado em SQLite
-    repository = SqliteJobRepository(db_path="data/jobs.db")
+    repository = SqliteJobRepository(db_path=str(BASE_DIR / "data" / "jobs.db"))
 
     # Carrega os pesos do Qwen3 na CPU (ocorre uma única vez na inicialização)
     logger.info(f"A carregar o motor TTS a partir de: {CAMINHO_MODELO}")
