@@ -304,7 +304,11 @@ class SqliteJobRepository:
             result = conn.execute(
                 """
                 UPDATE jobs SET
-                    status = CASE WHEN attempt < max_attempts THEN 'retryable' ELSE 'failed' END,
+                    status = CASE
+                        WHEN cancellation_requested = 1 THEN 'cancelled'
+                        WHEN attempt < max_attempts THEN 'retryable'
+                        ELSE 'failed'
+                    END,
                     error_message = ?,
                     finished_at = ?,
                     lease_heartbeat_at = ?,
