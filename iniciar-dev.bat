@@ -44,12 +44,12 @@ if not exist "data\outputs" mkdir "data\outputs"
 if not exist "data\voices" mkdir "data\voices"
 if not exist "logs" mkdir "logs"
 
-:: [4/5] Iniciar o mesmo Worker TTS em janela dedicada
-echo [4/5] Subindo o Worker TTS em processo isolado...
+:: [4/5] Iniciar supervisor do Worker TTS em janela dedicada
+echo [4/5] Subindo o supervisor do Worker TTS...
 set HF_HUB_DISABLE_XET=1
 set KMP_DUPLICATE_LIB_OK=TRUE
 
-start "Qwen3-TTS Worker (Backend)" cmd /k "chcp 65001 >nul && cd /d "%~dp0" && echo === WORKER TTS ATIVO === && python\python.exe -u worker_tts.py"
+start "Qwen3-TTS Worker Supervisor" cmd /k "chcp 65001 >nul && cd /d "%~dp0" && echo === SUPERVISOR TTS ATIVO === && python\python.exe -u worker_supervisor.py"
 
 :: Pequena pausa para permitir que o worker inicialize o banco SQLite
 timeout /t 3 /nobreak >nul
@@ -66,6 +66,6 @@ python\python.exe -u dev_server.py
 
 echo.
 echo Encerrando processos vinculados...
-taskkill /FI "WINDOWTITLE eq Qwen3-TTS Worker (Backend)*" /T /F >nul 2>&1
+taskkill /FI "WINDOWTITLE eq Qwen3-TTS Worker Supervisor*" /T /F >nul 2>&1
 echo Concluido.
 pause
