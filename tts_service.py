@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gc
 import json
+import logging
 import os
 import re
 import traceback
@@ -23,15 +24,9 @@ os.environ["HF_HUB_DISABLE_XET"] = "1"
 
 
 def registrar_log(mensagem: str) -> None:
-    linha = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {mensagem}"
-    print(linha, flush=True)
-    try:
-        log_path = Path(__file__).resolve().parent / "worker_tts.log"
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(linha + "\n")
-    except Exception:
-        pass
-
+    # Usa logging padrão para que os logs de síntese também entrem no arquivo
+    # individual do job enquanto ele estiver em execução.
+    logging.getLogger("tts_service").info(mensagem)
 
 class TTSService:
     def __init__(self, model_path: str, dict_file: str = "phoneme_dict.json") -> None:
