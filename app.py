@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 UTC = timezone.utc
 
-# 1. Blindagem de importações locais: garante que a raiz do projeto esteja no topo do sys.path
+# 1. Blindagem de importações locais
 BASE_DIR = Path(__file__).resolve().parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
@@ -56,36 +56,7 @@ def carregar_biblioteca() -> dict:
     return carregar_json(VOICES_FILE, {})
 
 def carregar_historico() -> list:
-    return carregar_json(HISTORY_FILE, [])
-
-def registrar_no_historico(voz_nome: str, texto_falado: str, caminho_arquivo: str | None) -> list:
-    historico = carregar_historico()
-    novo_registro = {
-        "data": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
-        "voz": voz_nome,
-        "texto": texto_falado,
-        "arquivo": str(caminho_arquivo or "")
-    }
-    historico.insert(0, novo_registro)
-    salvar_json(HISTORY_FILE, historico)
-    return atualizar_tabela_historico()
-
-def atualizar_tabela_historico(busca_texto: str = "", filtro_voz: str = "Todas") -> list:
-    historico = carregar_historico()
-    linhas = []
-    for h in historico:
-        voz = h.get("voz", "")
-        texto = h.get("texto", "")
-        data_hora = h.get("data", "")
-        arquivo = h.get("arquivo", "")
-
-        if filtro_voz != "Todas" and voz != filtro_voz:
-            continue
-        if busca_texto and busca_texto.lower() not in texto.lower():
-            continue
-
-        linhas.append([data_hora, voz, texto, arquivo])
-    return linhas
+    return carregar_json(HISTORY_FILE, {})
 
 def parse_texto_para_chunks(texto: str) -> list[dict]:
     """Divide o texto em blocos de português e inglês com base nos colchetes [exemplo]."""
@@ -108,6 +79,40 @@ def parse_texto_para_chunks(texto: str) -> list[dict]:
                 "pause_after_ms": 150
             })
     return chunks
+
+def atualizar_tabela_jobs():
+    """Busca os jobs mais recentes na base de dados para exibir na aba de Gerenciamento."""
+    jobs_list, _ = job_repo.list(offset=0, limit=50)
+    linhas = []
+    for j in jobs_list:
+        job_id_short = str(j.id)[:8]
+        status = j.status
+        criado = j.created_at.strftime("%H:%M:%S") if j.created_at else ""
+        
+        # Extrai detalhes do input ou progresso
+        inp = j.input or {}
+        texto_resumo = inp.get("text", "")
+        if not texto_resumo and "chunks" in inp:
+            texto_resumo = f"[Modo Chunks - {len(inp['chunks'])} blocos]"
+        if len(texto_resumo) > 35:
+            texto_resumo = texto_resumo[:35] + "..."
+
+        # Progresso ou detalhes de saída
+        progresso_txt = "-"
+        audio_path = ""
+        if status == "running" and j.output and isinstance(j.output, dict):
+            status_msg = j.output.get("status_msg", "A processar...")
+            progresso_txt = f"⚙️ {status_msg}"
+        elif status == "succeeded" and j.output and isinstance(j.output, dict):
+            audio_path = j.output.get("audio_path", "")
+            progresso_txt = "✅ Concluído"
+        elif status == "failed":
+            progresso_txt = f"❌ {j.error_message or 'Erro'}"
+        elif status == "cancelled":
+            progresso_txt = "🛑 Cancelado"
+
+        linhas.append([str(j.id), job_id_short, criado, status, progresso_txt, texto_resumo, audio_path])
+    return linhas
 
 # --- Estilização Visual Customizada ---
 
@@ -180,30 +185,6 @@ body, .gradio-container {
     box-shadow: 0 0 8px #22C55E;
 }
 
-.tab-nav {
-    background-color: #171A21 !important;
-    border: 1px solid #262B36 !important;
-    border-radius: 10px !important;
-    padding: 4px !important;
-    gap: 6px !important;
-    display: flex !important;
-}
-.tab-nav button {
-    background: transparent !important;
-    border: none !important;
-    color: #9CA3AF !important;
-    border-radius: 8px !important;
-    padding: 8px 16px !important;
-    font-size: 14px !important;
-    font-weight: 500 !important;
-    min-height: 44px !important;
-}
-.tab-nav button.selected {
-    background-color: #F97316 !important;
-    color: #FFFFFF !important;
-    font-weight: 600 !important;
-}
-
 .card-panel {
     background-color: #171A21 !important;
     border: 1px solid #262B36 !important;
@@ -216,9 +197,6 @@ textarea, input[type="text"] {
     border: 1px solid #262B36 !important;
     color: #E5E7EB !important;
     border-radius: 8px !important;
-}
-textarea:focus, input[type="text"]:focus {
-    border-color: #F97316 !important;
 }
 
 .btn-primary {
@@ -240,68 +218,40 @@ textarea:focus, input[type="text"]:focus {
     font-weight: 500;
     margin-bottom: 12px;
 }
-.toast-success {
-    background: rgba(34, 197, 94, 0.12);
-    border: 1px solid rgba(34, 197, 94, 0.3);
-    color: #22C55E;
-}
-.toast-error {
-    background: rgba(239, 68, 68, 0.12);
-    border: 1px solid rgba(239, 68, 68, 0.3);
-    color: #EF4444;
-}
-.toast-info {
-    background: rgba(59, 130, 246, 0.12);
-    border: 1px solid rgba(59, 130, 246, 0.3);
-    color: #3B82F6;
-}
-
-.app-footer {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-top: 32px;
-    padding-top: 16px;
-    border-top: 1px solid #262B36;
-    font-size: 12px;
-    color: #6B7280;
-}
+.toast-success { background: rgba(34, 197, 94, 0.12); border: 1px solid rgba(34, 197, 94, 0.3); color: #22C55E; }
+.toast-error { background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.3); color: #EF4444; }
+.toast-info { background: rgba(59, 130, 246, 0.12); border: 1px solid rgba(59, 130, 246, 0.3); color: #3B82F6; }
 """
 
 # --- Interface Gráfica Gradio ---
 
-with gr.Blocks(title="Qwen3-TTS · Síntese de Voz") as demo:    
-    # Estados da sessão
+with gr.Blocks(title="Qwen3-TTS · Síntese de Voz") as demo:
+    
     active_job_id = gr.State(value=None)
-    active_job_meta = gr.State(value={})
-
-    # Timer para monitorar o status do Job a cada 2 segundos
     status_timer = gr.Timer(value=2, active=False)
 
-    # 1. Cabeçalho
     gr.HTML("""
     <div class='app-header'>
         <div class='header-left'>
             <div class='header-icon'>🎙️</div>
             <div class='header-titles'>
                 <h1>Qwen3-TTS</h1>
-                <p>Síntese Didática Desacoplada · Fila Durável de Tarefas</p>
+                <p>Síntese Didática Desacoplada · Gestão por Fila Durável</p>
             </div>
         </div>
         <div class='status-badge'>
             <div class='status-dot'></div>
-            <span>Worker Conectado</span>
+            <span>Worker Ativo</span>
         </div>
     </div>
     """)
 
     biblioteca_inicial = carregar_biblioteca()
     nomes_vozes = list(biblioteca_inicial.keys())
-    total_hist = len(carregar_historico())
 
     with gr.Tabs():
         
-        # --- ABA 1: SÍNTESE ---
+        # --- ABA 1: SÍNTESE (LIMPA, SEM BOTÃO DE CANCELAR) ---
         with gr.TabItem("🎧 Sintetizar Frase"):
             with gr.Row():
                 with gr.Column(scale=6):
@@ -318,43 +268,61 @@ with gr.Blocks(title="Qwen3-TTS · Síntese de Voz") as demo:
                         gr.Markdown("### 2. Texto para Locução")
                         input_texto_narrador = gr.Textbox(
                             label="",
-                            placeholder="Dica: Use colchetes para chunks em inglês: Por isso, a gente diz... [I am watching a series.]",
+                            placeholder="Use colchetes para chunks em inglês: Por isso, a gente diz... [I am watching a series.]",
                             lines=5,
-                            value="Por isso, a gente diz... [I am watching a series.] Ou então... [Let's watch the game!] — A imagem se mexe, e você acompanha."
+                            value="Por isso, a gente diz... [I am watching a series.] Ou então... [Let's watch the game!]"
                         )
                         with gr.Row():
                             chk_chunking = gr.Checkbox(
                                 label="Modo Alta Fidelidade (Chunking por Idioma)",
                                 value=True,
-                                info="Divide em blocos PT e EN nativos. Mais natural na troca de língua."
                             )
                             slider_temp = gr.Slider(
-                                minimum=0.5,
-                                maximum=0.8,
-                                value=0.65,
-                                step=0.05,
-                                label="Temperatura (0.65 ideal)"
+                                minimum=0.5, maximum=0.8, value=0.65, step=0.05, label="Temperatura"
                             )
 
-                        with gr.Row():
-                            btn_sintetizar = gr.Button("⚡ Enfileirar Síntese", elem_classes="btn-primary", scale=4)
-                            btn_cancelar = gr.Button("🛑 Cancelar Pedido", variant="stop", scale=2)
+                        btn_sintetizar = gr.Button("⚡ Enfileirar Síntese", elem_classes="btn-primary")
 
                 with gr.Column(scale=4):
-                    toast_status = gr.HTML("<div class='toast-banner toast-info'>Pronto para enfileirar tarefas.</div>")
+                    toast_status = gr.HTML("<div class='toast-banner toast-info'>Pronto para enfileirar tarefas. Acompanhe na aba Jobs.</div>")
                     
                     with gr.Group(elem_classes="card-panel"):
-                        gr.Markdown("### Resultado da Síntese")
+                        gr.Markdown("### Último Resultado Gerado")
                         audio_output = gr.Audio(label="", interactive=False)
                     
                     with gr.Accordion("Referência da Voz Ativa", open=False):
                         preview_audio_ref = gr.Audio(label="Áudio Original", interactive=False)
                         preview_texto_ref = gr.Textbox(label="Transcrição", interactive=False, lines=2)
 
-        # --- ABA 2: CADASTRAR NOVA VOZ ---
+        # --- ABA 2: GERENCIAMENTO DE JOBS (NOVA) ---
+        with gr.TabItem("⚙️ Gestão de Jobs"):
+            with gr.Group(elem_classes="card-panel"):
+                gr.Markdown("### Fila de Tarefas e Histórico de Execução")
+                gr.Markdown("Acompanhe o estado de cada tarefa em tempo real. Se o servidor for reiniciado, os jobs pendentes são retomados automaticamente.")
+                
+                with gr.Row():
+                    btn_atualizar_jobs = gr.Button("🔄 Atualizar Lista", scale=1)
+                
+                tabela_jobs = gr.Dataframe(
+                    headers=["UUID Completo", "ID", "Hora", "Status", "Progresso / Detalhes", "Texto", "Caminho do Áudio"],
+                    value=atualizar_tabela_jobs(),
+                    interactive=False,
+                    wrap=True,
+                    visible=True
+                )
+                
+                with gr.Row():
+                    job_uuid_selecionado = gr.Textbox(label="ID do Job Selecionado", interactive=False, scale=3)
+                    btn_cancelar_job = gr.Button("🛑 Cancelar Job", variant="stop", scale=1)
+                    btn_deletar_job = gr.Button("🗑️ Deletar Job & Áudio", variant="stop", scale=1)
+
+                with gr.Row():
+                    player_job = gr.Audio(label="Ouvir Áudio do Job Selecionado", interactive=False)
+
+        # --- ABA 3: CADASTRAR NOVA VOZ ---
         with gr.TabItem("➕ Cadastrar Nova Voz"):
             with gr.Group(elem_classes="card-panel"):
-                gr.Markdown("### Cadastro de Nova Matriz de Voz (3 a 5 segundos)")
+                gr.Markdown("### Cadastro de Nova Matriz de Voz")
                 with gr.Row():
                     with gr.Column():
                         novo_audio_ref = gr.Audio(type="filepath", label="Áudio de Referência (WAV)", sources=["upload", "microphone"])
@@ -363,30 +331,6 @@ with gr.Blocks(title="Qwen3-TTS · Síntese de Voz") as demo:
                         novo_nome_voz = gr.Textbox(label="Nome do Narrador")
                         btn_salvar_voz = gr.Button("Salvar Voz na Biblioteca", elem_classes="btn-primary")
                         status_salvamento = gr.HTML("")
-
-        # --- ABA 3: HISTÓRICO ---
-        with gr.TabItem(f"📜 Histórico ({total_hist})"):
-            with gr.Group(elem_classes="card-panel"):
-                with gr.Row():
-                    filtro_busca_hist = gr.Textbox(label="Buscar texto", placeholder="Filtrar...", scale=4)
-                    filtro_voz_hist = gr.Dropdown(choices=["Todas"] + nomes_vozes, value="Todas", label="Voz", scale=2)
-
-                tabela_historico = gr.Dataframe(
-                    headers=["Data/Hora", "Voz", "Texto", "Arquivo Salvo"],
-                    value=atualizar_tabela_historico(),
-                    interactive=False,
-                    wrap=True
-                )
-                with gr.Row():
-                    caminho_selecionado = gr.Textbox(label="Arquivo Selecionado", interactive=False)
-                    player_historico = gr.Audio(label="Ouvir Gravação", interactive=False)
-
-    gr.HTML("""
-    <div class='app-footer'>
-        <div>Qwen3-TTS Service · Desacoplamento via Fila Durável SQLite</div>
-        <div>Pronto para Aulas e Reels Didáticos</div>
-    </div>
-    """)
 
     # --- Lógica de Interação ---
 
@@ -403,34 +347,17 @@ with gr.Blocks(title="Qwen3-TTS · Síntese de Voz") as demo:
         outputs=[preview_audio_ref, preview_texto_ref]
     )
 
-    # 1. Enfileirar Pedido de Síntese
+    # Enfileirar Síntese
     def enfileirar_pedido_sintese(nome_voz: str, texto: str, usar_chunking: bool, temperatura: float):
-        if not nome_voz:
-            return (
-                "<div class='toast-banner toast-error'>❌ Selecione uma voz da biblioteca.</div>",
-                None,
-                {},
-                gr.Timer(active=False)
-            )
-        if not texto or not texto.strip():
-            return (
-                "<div class='toast-banner toast-error'>❌ O texto do narrador não pode estar vazio.</div>",
-                None,
-                {},
-                gr.Timer(active=False)
-            )
+        if not nome_voz or not texto or not texto.strip():
+            return "<div class='toast-banner toast-error'>❌ Preencha a voz e o texto corretamente.</div>", None, gr.Timer(active=False), atualizar_tabela_jobs()
 
         bib = carregar_biblioteca()
         if nome_voz not in bib:
-            return (
-                "<div class='toast-banner toast-error'>❌ Voz selecionada não encontrada na biblioteca.</div>",
-                None,
-                {},
-                gr.Timer(active=False)
-            )
+            return "<div class='toast-banner toast-error'>❌ Voz não encontrada.</div>", None, gr.Timer(active=False), atualizar_tabela_jobs()
 
         dados_voz = bib[nome_voz]
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         arquivo_saida = str(OUTPUTS_DIR / f"audio_{timestamp}.wav")
 
         job_input = {
@@ -445,19 +372,17 @@ with gr.Blocks(title="Qwen3-TTS · Síntese de Voz") as demo:
         else:
             job_input["text"] = texto.replace("[", "").replace("]", "")
 
-        # Enfileira no banco durável compartilhado
         job = job_repo.enqueue(kind="tts_generate", input=job_input)
-        meta = {"voz": nome_voz, "texto": texto}
-
-        toast = f"<div class='toast-banner toast-info'>⏳ Tarefa enfileirada ({str(job.id)[:8]}). O Worker assumirá a síntese...</div>"
-        return toast, str(job.id), meta, gr.Timer(active=True)
+        toast = f"<div class='toast-banner toast-info'>⏳ Job {str(job.id)[:8]} enfileirado com sucesso! Vá para a aba 'Gestão de Jobs' para acompanhar.</div>"
+        return toast, str(job.id), gr.Timer(active=True), atualizar_tabela_jobs()
 
     btn_sintetizar.click(
         fn=enfileirar_pedido_sintese,
         inputs=[dropdown_voz, input_texto_narrador, chk_chunking, slider_temp],
-        outputs=[toast_status, active_job_id, active_job_meta, status_timer]
+        outputs=[toast_status, active_job_id, status_timer, tabela_jobs]
     )
 
+<<<<<<< HEAD
     # 2. Polling de Status do Job (Timer a cada 2s)
     def _html_seguro(valor):
         import html
@@ -498,13 +423,18 @@ with gr.Blocks(title="Qwen3-TTS · Síntese de Voz") as demo:
         """
 
     def checar_status_job(job_id_str: str | None, meta: dict):
+=======
+    # Polling global do job ativo para atualizar o player na aba de síntese quando concluído
+    def checar_status_ativo(job_id_str: str | None):
+>>>>>>> b83f554 (ok)
         if not job_id_str:
-            return gr.update(), None, atualizar_tabela_historico(), gr.Timer(active=False)
-
+            return gr.update(), gr.Timer(active=False), atualizar_tabela_jobs()
+        
         job = job_repo.get(job_id_str)
         if not job:
-            return "<div class='toast-banner toast-error'>Tarefa não encontrada no banco.</div>", None, atualizar_tabela_historico(), gr.Timer(active=False)
+            return gr.update(), gr.Timer(active=False), atualizar_tabela_jobs()
 
+<<<<<<< HEAD
         if job.status == "queued":
             return (
                 _detalhes_job(job, "⏳ Na fila. O worker ainda não assumiu esta tarefa."),
@@ -552,41 +482,99 @@ with gr.Blocks(title="Qwen3-TTS · Síntese de Voz") as demo:
             )
 
         return _detalhes_job(job, f"Status atual: {job.status}"), None, atualizar_tabela_historico(), gr.Timer(active=True)
+=======
+        tabela = atualizar_tabela_jobs()
+        if job.status == "succeeded":
+            caminho = job.output.get("audio_path") if job.output else None
+            return caminho, gr.Timer(active=False), tabela
+        elif job.status in ["failed", "cancelled"]:
+            return gr.update(), gr.Timer(active=False), tabela
+
+        return gr.update(), gr.Timer(active=True), tabela
+>>>>>>> b83f554 (ok)
 
     status_timer.tick(
-        fn=checar_status_job,
-        inputs=[active_job_id, active_job_meta],
-        outputs=[toast_status, audio_output, tabela_historico, status_timer]
-    )
-
-    # 3. Cancelar Tarefa
-    def cancelar_pedido_atual(job_id_str: str | None):
-        if not job_id_str:
-            return "<div class='toast-banner toast-error'>Nenhuma tarefa ativa para cancelar.</div>"
-        job_repo.request_cancellation(job_id=job_id_str, now=datetime.now(timezone.utc))
-        return f"<div class='toast-banner toast-info'>Cancelamento solicitado para a tarefa {job_id_str[:8]}...</div>"
-
-    btn_cancelar.click(
-        fn=cancelar_pedido_atual,
+        fn=checar_status_ativo,
         inputs=[active_job_id],
-        outputs=[toast_status]
+        outputs=[audio_output, status_timer, tabela_jobs]
     )
 
-    # 4. Cadastrar Nova Voz
+    # Selecionar linha na tabela de Jobs para ouvir ou gerenciar
+    def selecionar_job_tabela(evt: gr.SelectData):
+        tabela_dados = tabela_jobs.value
+        if not tabela_dados or evt.index[0] >= len(tabela_dados):
+            return "", None
+        linha = tabela_dados[evt.index[0]]
+        full_uuid = linha[0]
+        audio_path = linha[6]
+        
+        caminho_audio = audio_path if (audio_path and os.path.exists(audio_path)) else None
+        return full_uuid, caminho_audio
+
+    tabela_jobs.select(
+        fn=selecionar_job_tabela,
+        outputs=[job_uuid_selecionado, player_job]
+    )
+
+    # Ações na Gestão de Jobs
+    def acao_cancelar_job(job_id_str: str):
+        if not job_id_str:
+            return "Selecione um job na tabela.", atualizar_tabela_jobs()
+        job_repo.request_cancellation(job_id=job_id_str, now=datetime.now(timezone.utc))
+        return f"Cancelamento solicitado para o job {job_id_str[:8]}", atualizar_tabela_jobs()
+
+    btn_cancelar_job.click(
+        fn=acao_cancelar_job,
+        inputs=[job_uuid_selecionado],
+        outputs=[toast_status, tabela_jobs]
+    )
+
+    # Exclusão em Cascata (Deleta o Job e apaga o arquivo de áudio associado)
+    def acao_deletar_job(job_id_str: str):
+        if not job_id_str:
+            return "Selecione um job na tabela.", atualizar_tabela_jobs(), None
+        
+        job = job_repo.get(job_id_str)
+        if job and job.output and isinstance(job.output, dict):
+            audio_p = job.output.get("audio_path")
+            if audio_p and os.path.exists(audio_p):
+                try:
+                    os.remove(audio_p)
+                except Exception:
+                    pass
+
+        # Remove fisicamente do SQLite (executando comando SQL direto no repositório)
+        try:
+            with job_repo._get_conn() as conn:
+                conn.execute("DELETE FROM jobs WHERE id = ?", (job_id_str,))
+        except Exception:
+            pass
+
+        return f"Job {job_id_str[:8]} e respetivo áudio eliminados.", atualizar_tabela_jobs(), None
+
+    btn_deletar_job.click(
+        fn=acao_deletar_job,
+        inputs=[job_uuid_selecionado],
+        outputs=[toast_status, tabela_jobs, player_job]
+    )
+
+    btn_atualizar_jobs.click(
+        fn=atualizar_tabela_jobs,
+        outputs=[tabela_jobs]
+    )
+
+    # Cadastrar nova voz
     def salvar_nova_voz_action(nome: str, audio: str, transcricao: str):
         if not nome or not audio or not transcricao:
-            return "<div class='toast-banner toast-error'>Preencha todos os campos do cadastro.</div>", gr.update()
-        
+            return "<div class='toast-banner toast-error'>Preencha todos os campos.</div>", gr.update()
         bib = carregar_biblioteca()
         ext = Path(audio).suffix
         nome_slug = nome.strip().lower().replace(" ", "_")
         destino = VOICES_DIR / f"voz_{nome_slug}{ext}"
-        
         shutil.copy(audio, destino)
         bib[nome] = {"audio_path": str(destino), "transcript": transcricao}
         salvar_json(VOICES_FILE, bib)
-        
-        return f"<div class='toast-banner toast-success'>Voz '{nome}' cadastrada com sucesso!</div>", gr.update(choices=list(bib.keys()), value=nome)
+        return f"<div class='toast-banner toast-success'>Voz '{nome}' cadastrada!</div>", gr.update(choices=list(bib.keys()), value=nome)
 
     btn_salvar_voz.click(
         fn=salvar_nova_voz_action,
@@ -594,32 +582,5 @@ with gr.Blocks(title="Qwen3-TTS · Síntese de Voz") as demo:
         outputs=[status_salvamento, dropdown_voz]
     )
 
-    # 5. Filtros e Seleção do Histórico
-    filtro_busca_hist.change(
-        fn=atualizar_tabela_historico,
-        inputs=[filtro_busca_hist, filtro_voz_hist],
-        outputs=tabela_historico
-    )
-    filtro_voz_hist.change(
-        fn=atualizar_tabela_historico,
-        inputs=[filtro_busca_hist, filtro_voz_hist],
-        outputs=tabela_historico
-    )
-
-    def carregar_linha_hist(evt: gr.SelectData):
-        linha = tabela_historico.value[evt.index[0]]
-        return linha[3], linha[3]
-
-    tabela_historico.select(
-        fn=carregar_linha_hist,
-        outputs=[caminho_selecionado, player_historico]
-    )
-
-
 if __name__ == "__main__":
-    demo.launch(
-        inbrowser=True,
-        server_name="127.0.0.1",
-        share=False,
-        css=CUSTOM_CSS,
-    )
+    demo.launch(inbrowser=True, server_name="127.0.0.1", share=False, css=CUSTOM_CSS)

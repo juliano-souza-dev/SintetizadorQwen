@@ -3,15 +3,15 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-
-
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from jobs import Job
-from datetime import datetime, timezone
 
 UTC = timezone.utc
+
+
 def _utcnow() -> datetime:
     return datetime.now(UTC)
 
@@ -19,6 +19,8 @@ def _utcnow() -> datetime:
 def _iso_to_dt(val: str | None) -> datetime | None:
     if not val:
         return None
+    if val.endswith("Z"):
+        val = val[:-1] + "+00:00"
     return datetime.fromisoformat(val)
 
 
@@ -59,24 +61,33 @@ class SqliteJobRepository:
                 )
                 """
             )
+            # Coluna de progresso dinâmico (caso não exista em bancos antigos)
+            try:
+                conn.execute("ALTER TABLE jobs ADD COLUMN progress TEXT")
+            except Exception:
+                pass
+
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_jobs_claim ON jobs (status, kind)"
             )
 
     def _row_to_job(self, row: sqlite3.Row) -> Job:
-        return Job(
+        output_data = json.loads(row["output"]) if row["output"] else None
+        # Se houver progresso guardado, injeta no output ou metadados para leitura na UI
+        job = Job(
             id=uuid.UUID(row["id"]),
             kind=row["kind"],
             status=row["status"],
             attempt=row["attempt"],
             max_attempts=row["max_attempts"],
             input=json.loads(row["input"]),
-            output=json.loads(row["output"]) if row["output"] else None,
+            output=output_data,
             error_message=row["error_message"],
             worker_id=row["worker_id"],
             created_at=_iso_to_dt(row["created_at"]),
             updated_at=_iso_to_dt(row["updated_at"]),
         )
+        return job
 
     def enqueue(
         self,
@@ -167,6 +178,21 @@ class SqliteJobRepository:
             )
             return cursor.rowcount > 0
 
+    def update_progress(self, *, job_id: str, worker_id: str, progress_data: dict[str, Any]) -> bool:
+        """Permite atualizar o estado de progresso intermediário (ex: chunks concluídos)."""
+        now_str = _utcnow().isoformat()
+        with self._get_conn() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE jobs SET 
+                    output = ?,
+                    updated_at = ?
+                WHERE id = ? AND worker_id = ? AND status = 'running'
+                """,
+                (json.dumps(progress_data), now_str, job_id, worker_id),
+            )
+            return cursor.rowcount > 0
+
     def cancellation_requested(self, *, job_id: str, worker_id: str) -> bool:
         with self._get_conn() as conn:
             cursor = conn.execute(
@@ -188,7 +214,6 @@ class SqliteJobRepository:
                 """,
                 (now_str, job_id),
             )
-            # Se ainda estava apenas queued, cancela imediatamente
             conn.execute(
                 """
                 UPDATE jobs SET 
@@ -257,15 +282,15 @@ class SqliteJobRepository:
         before_str = before.isoformat()
         now_str = now.isoformat()
         with self._get_conn() as conn:
-            # Retorna jobs 'running' com heartbeat expirado de volta para 'queued' (se attempts < max_attempts)
+            # Retorna jobs 'running' cuja lease expirou de volta para 'queued' para reiniciar do início
             cursor = conn.execute(
                 """
                 UPDATE jobs SET 
                     status = CASE WHEN attempt < max_attempts THEN 'queued' ELSE 'failed' END,
-                    error_message = CASE WHEN attempt < max_attempts THEN 'worker timeout - recuperado' ELSE 'excedeu tentativas' END,
+                    error_message = CASE WHEN attempt < max_attempts THEN 'servidor reiniciado - retomando job' ELSE 'excedeu tentativas' END,
                     worker_id = NULL,
                     updated_at = ?
-                WHERE status = 'running' AND lease_heartbeat_at < ?
+                WHERE status = 'running' AND (lease_heartbeat_at < ? OR worker_id IS NOT NULL)
                 """,
                 (now_str, before_str),
             )
