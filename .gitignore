@@ -1,0 +1,73 @@
+# ==========================================
+# Ambiente Virtual e Executáveis Portáteis
+# ==========================================
+python/
+venv/
+env/
+ENV/
+.venv/
+
+# ==========================================
+# Caches do Python e Compilação
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# ==========================================
+# Modelos e Pesos Pesados (Hugging Face / PyTorch)
+# ==========================================
+# Ignora pastas de modelos locais para não estourar o Git
+models/
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.onnx
+
+# ==========================================
+# Ficheiros Temporários e Saídas de Áudio
+# ==========================================
+# Áudios gerados e temporários de conversão
+resultado_voz*.wav
+referencia_temp.wav
+*.tmp
+
+# Pasta permanente de histórico de áudios (gerados dinamicamente)
+historico_audios/
+
+# ==========================================
+# Ficheiros de Log e Depuração
+# ==========================================
+*.log
+app_error.log
+sistema.log
+crash_report.txt
+
+# ==========================================
+# Dados Dinâmicos do Utilizador (Opcional)
+# ==========================================
+# Descomenta a linha abaixo se não quiseres sincronizar o histórico de gerações
+# history.json
+
+# Se quiseres versionar apenas o modelo padrão de vozes e ignorar as tuas personalizadas:
+# voices_custom.json
+
+# ==========================================
+# Configurações de IDEs e Sistema Operativo
+# ==========================================
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.DS_Store
