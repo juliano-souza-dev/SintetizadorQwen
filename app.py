@@ -106,6 +106,9 @@ def atualizar_tabela_jobs():
         elif status == "succeeded" and j.output and isinstance(j.output, dict):
             audio_path = j.output.get("audio_path", "")
             progresso_txt = "✅ Concluído"
+        elif status == "retryable":
+            detalhe_erro = (j.error_message or "Falha na tentativa anterior").splitlines()[0]
+            progresso_txt = f"🔁 Nova tentativa pendente: {detalhe_erro[:100]}"
         elif status == "failed":
             progresso_txt = f"❌ {j.error_message or 'Erro'}"
         elif status == "cancelled":
@@ -440,7 +443,15 @@ with gr.Blocks(title="Qwen3-TTS · Síntese de Voz") as demo:
 
         if job.status == "queued":
             return (
-                _detalhes_job(job, "⏳ Na fila. O worker ainda não assumiu esta tarefa."),
+                _detalhes_job(job, "⏳ Na fila. Aguardando um worker disponível."),
+                gr.update(),
+                gr.Timer(active=True),
+                tabela
+            )
+
+        if job.status == "retryable":
+            return (
+                _detalhes_job(job, "🔁 A tentativa anterior falhou. O job foi liberado para nova tentativa automática.", "toast-info"),
                 gr.update(),
                 gr.Timer(active=True),
                 tabela
