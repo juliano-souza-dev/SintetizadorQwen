@@ -80,41 +80,65 @@ def parse_texto_para_chunks(texto: str) -> list[dict]:
             })
     return chunks
 
+def _formatar_duracao(segundos):
+    if segundos is None or segundos < 0: return "Calculando"
+    segundos = int(round(segundos))
+    if segundos < 60: return f"{segundos}s"
+    minutos, resto = divmod(segundos, 60)
+    if minutos < 60: return f"{minutos}min {resto:02d}s"
+    horas, minutos = divmod(minutos, 60)
+    return f"{horas}h {minutos:02d}min"
+
+def _estimativas_progresso(job):
+    progress = job.progress or {}
+    history = progress.get("chunk_history") or []
+    valid = [item for item in history if isinstance(item, dict) and float(item.get("text_chars") or 0) > 0 and float(item.get("duration_seconds") or 0) > 0]
+    total_chars = sum(float(item["text_chars"]) for item in valid)
+    total_seconds = sum(float(item["duration_seconds"]) for item in valid)
+    rate = total_seconds / total_chars if total_chars else None
+    elapsed_current = 0.0
+    started = progress.get("chunk_started_at")
+    if started:
+        try:
+            started_dt = datetime.fromisoformat(started.replace("Z", "+00:00"))
+            elapsed_current = max(0.0, (datetime.now(timezone.utc) - started_dt).total_seconds())
+        except (TypeError, ValueError): pass
+    chunk_eta = task_eta = None
+    chunk_chars = float(progress.get("chunk_chars") or 0)
+    remaining_chars = float(progress.get("remaining_chars") or 0)
+    if rate and progress.get("phase") == "synthesizing" and started:
+        chunk_eta = max(0.0, rate * chunk_chars - elapsed_current)
+        task_eta = max(0.0, rate * remaining_chars - elapsed_current)
+    elif rate and progress.get("phase") == "synthesizing":
+        task_eta = max(0.0, rate * remaining_chars)
+    return chunk_eta, task_eta, elapsed_current, rate
+
+def _resumo_progresso(job):
+    progress = job.progress or {}
+    if job.status == "queued": return "Aguardando na fila", "—"
+    if job.status == "retryable": return "Aguardando nova tentativa", "—"
+    if job.status == "succeeded": return "Concluído", "100%"
+    if job.status == "failed": return "Falhou", "—"
+    if job.status == "cancelled": return "Cancelado", "—"
+    phase = progress.get("phase")
+    if phase == "synthesizing":
+        current, total = int(progress.get("current_chunk") or 0), int(progress.get("total_chunks") or 0)
+        completed = int(progress.get("completed_chunks") or 0)
+        chunk_eta, task_eta, _, _ = _estimativas_progresso(job)
+        etapa = f"Chunk {current}/{total}" if total else "Sintetizando"
+        percentual = f"{round((completed / total) * 100)}%" if total else "—"
+        previsao = f"Chunk: {_formatar_duracao(chunk_eta)} · Total: {_formatar_duracao(task_eta)}" if task_eta is not None else "Estimando após o primeiro chunk"
+        return etapa, f"{percentual} · {previsao}"
+    if phase == "finalizing": return "Montando arquivo de áudio", "Quase concluído"
+    return "Preparando motor / iniciando inferência", "Calculando"
+
 def atualizar_tabela_jobs():
-    """Busca os jobs mais recentes na base de dados para exibir na aba de Gerenciamento."""
     jobs_list, _ = job_repo.list(offset=0, limit=50)
     linhas = []
-    for j in jobs_list:
-        job_id_short = str(j.id)[:8]
-        status = j.status
-        criado = j.created_at.strftime("%H:%M:%S") if j.created_at else ""
-        
-        # Extrai detalhes do input ou progresso
-        inp = j.input or {}
-        texto_resumo = inp.get("text", "")
-        if not texto_resumo and "chunks" in inp:
-            texto_resumo = f"[Modo Chunks - {len(inp['chunks'])} blocos]"
-        if len(texto_resumo) > 35:
-            texto_resumo = texto_resumo[:35] + "..."
-
-        # Progresso ou detalhes de saída
-        progresso_txt = "-"
-        audio_path = ""
-        if status == "running" and j.output and isinstance(j.output, dict):
-            status_msg = j.output.get("status_msg", "A processar...")
-            progresso_txt = f"⚙️ {status_msg}"
-        elif status == "succeeded" and j.output and isinstance(j.output, dict):
-            audio_path = j.output.get("audio_path", "")
-            progresso_txt = "✅ Concluído"
-        elif status == "retryable":
-            detalhe_erro = (j.error_message or "Falha na tentativa anterior").splitlines()[0]
-            progresso_txt = f"🔁 Nova tentativa pendente: {detalhe_erro[:100]}"
-        elif status == "failed":
-            progresso_txt = f"❌ {j.error_message or 'Erro'}"
-        elif status == "cancelled":
-            progresso_txt = "🛑 Cancelado"
-
-        linhas.append([str(j.id), job_id_short, criado, status, progresso_txt, texto_resumo, audio_path])
+    for job in jobs_list:
+        criado = job.created_at.astimezone().strftime("%H:%M:%S") if job.created_at else ""
+        etapa, previsao = _resumo_progresso(job)
+        linhas.append([str(job.id)[:8], criado, job.status.upper(), etapa, previsao, f"{job.attempt}/{job.max_attempts}"])
     return linhas
 
 # --- Estilização Visual Customizada ---
@@ -232,6 +256,7 @@ with gr.Blocks(title="Qwen3-TTS · Síntese de Voz") as demo:
     
     active_job_id = gr.State(value=None)
     status_timer = gr.Timer(value=2, active=False)
+    jobs_timer = gr.Timer(value=2, active=True)
 
     gr.HTML("""
     <div class='app-header'>
@@ -297,31 +322,27 @@ with gr.Blocks(title="Qwen3-TTS · Síntese de Voz") as demo:
                         preview_audio_ref = gr.Audio(label="Áudio Original", interactive=False)
                         preview_texto_ref = gr.Textbox(label="Transcrição", interactive=False, lines=2)
 
-        # --- ABA 2: GERENCIAMENTO DE JOBS (NOVA) ---
+        # --- ABA 2: MONITORAMENTO E CONTROLE DE JOBS ---
         with gr.TabItem("⚙️ Gestão de Jobs"):
             with gr.Group(elem_classes="card-panel"):
-                gr.Markdown("### Fila de Tarefas e Histórico de Execução")
-                gr.Markdown("Acompanhe o estado de cada tarefa em tempo real. Se o servidor for reiniciado, os jobs pendentes são retomados automaticamente.")
-                
+                gr.Markdown("### Central de processamento")
+                gr.Markdown("Acompanhe a fila, a etapa atual e as estimativas. O painel atualiza automaticamente a cada 2 segundos.")
                 with gr.Row():
-                    btn_atualizar_jobs = gr.Button("🔄 Atualizar Lista", scale=1)
-                
-                tabela_jobs = gr.Dataframe(
-                    headers=["UUID Completo", "ID", "Hora", "Status", "Progresso / Detalhes", "Texto", "Caminho do Áudio"],
-                    value=atualizar_tabela_jobs(),
-                    interactive=False,
-                    wrap=True,
-                    visible=True
-                )
-                
-                with gr.Row():
-                    job_uuid_selecionado = gr.Textbox(label="ID do Job Selecionado", interactive=False, scale=3)
-                    btn_cancelar_job = gr.Button("🛑 Cancelar Job", variant="stop", scale=1)
-                    btn_deletar_job = gr.Button("🗑️ Deletar Job & Áudio", variant="stop", scale=1)
-
-                with gr.Row():
-                    player_job = gr.Audio(label="Ouvir Áudio do Job Selecionado", interactive=False)
-
+                    btn_atualizar_jobs = gr.Button("↻ Atualizar agora", scale=1)
+                    gr.Markdown("**Atualização automática ativa** · sem precisar abrir o terminal", scale=3)
+                with gr.Row(equal_height=False):
+                    with gr.Column(scale=6):
+                        gr.Markdown("#### Fila de tarefas")
+                        tabela_jobs = gr.Dataframe(headers=["ID", "Criado", "Status", "Etapa atual", "Progresso", "Previsão"], value=atualizar_tabela_jobs(), interactive=False, wrap=True, visible=True)
+                        gr.Markdown("<small>Selecione uma tarefa no painel ao lado para ver detalhes e controlar a execução.</small>")
+                    with gr.Column(scale=5):
+                        gr.Markdown("#### Tarefa selecionada")
+                        job_selector = gr.Dropdown(label="Selecionar job", choices=[], value=None, interactive=True, allow_custom_value=False)
+                        job_details = gr.HTML("<div class='toast-banner toast-info'>Selecione uma tarefa para acompanhar os detalhes.</div>")
+                        with gr.Row():
+                            btn_cancelar_job = gr.Button("⏸ Solicitar cancelamento", variant="stop", scale=1)
+                            btn_deletar_job = gr.Button("🗑 Excluir job", variant="stop", scale=1)
+                        player_job = gr.Audio(label="Áudio gerado", interactive=False)
         # --- ABA 3: CADASTRAR NOVA VOZ ---
         with gr.TabItem("➕ Cadastrar Nova Voz"):
             with gr.Group(elem_classes="card-panel"):
@@ -392,41 +413,51 @@ with gr.Blocks(title="Qwen3-TTS · Síntese de Voz") as demo:
 
     def _detalhes_job(job, mensagem, classe="toast-info"):
         entrada = job.input or {}
-        texto_job = entrada.get("text") or " ".join(
-            chunk.get("text", "") for chunk in entrada.get("chunks", [])
-        )
+        texto_job = entrada.get("text") or " ".join(chunk.get("text", "") for chunk in entrada.get("chunks", []))
         modo = "Chunking por idioma" if entrada.get("chunks") else "Síntese direta"
         criado = job.created_at.astimezone().strftime("%d/%m/%Y %H:%M:%S") if job.created_at else "Não informado"
-        atualizado = job.updated_at.astimezone().strftime("%d/%m/%Y %H:%M:%S") if job.updated_at else "Não informado"
         worker = job.worker_id or ("Aguardando worker" if job.status == "queued" else "Não identificado")
-        erro = (
-            f"<p style='color:#F87171;margin:8px 0 0'><b>Erro:</b> {_html_seguro(job.error_message)}</p>"
-            if job.error_message else ""
-        )
-        status_msg = ""
-        if job.output and isinstance(job.output, dict) and job.output.get("status_msg"):
-            status_msg = (
-                f"<div style='margin-top:8px'><small style='color:#9CA3AF'>Etapa informada pelo worker</small>"
-                f"<div>{_html_seguro(job.output.get('status_msg'))}</div></div>"
-            )
+        progress = job.progress or {}
+        chunk_eta, task_eta, chunk_elapsed, _ = _estimativas_progresso(job)
+        etapa, resumo = _resumo_progresso(job)
+        total_chunks = int(progress.get("total_chunks") or len(entrada.get("chunks") or []))
+        current_chunk = int(progress.get("current_chunk") or 0)
+        completed = int(progress.get("completed_chunks") or 0)
+        percentual = min(100, round((completed / total_chunks) * 100)) if total_chunks else (100 if job.status == "succeeded" else 0)
+        if job.status == "running" and total_chunks and progress.get("phase") == "synthesizing" and chunk_eta is not None and chunk_elapsed + chunk_eta > 0:
+            percentual = min(99, round(((completed + chunk_elapsed / (chunk_elapsed + chunk_eta)) / total_chunks) * 100))
+        elapsed_total = max(0, (datetime.now(timezone.utc) - job.started_at).total_seconds()) if job.started_at else None
+        elapsed_label = _formatar_duracao(elapsed_total) if elapsed_total is not None else "—"
+        chunk_label = f"{current_chunk}/{total_chunks}" if total_chunks else "—"
+        chunk_eta_label = _formatar_duracao(chunk_eta) if chunk_eta is not None else "Calculando"
+        task_eta_label = _formatar_duracao(task_eta) if task_eta is not None else "Calculando"
+        texto_chunk = _html_seguro(progress.get("chunk_text", ""))
+        erro = f"<div style='margin-top:12px;color:#FCA5A5'><b>Erro:</b><pre style='white-space:pre-wrap'>{_html_seguro(job.error_message)}</pre></div>" if job.error_message else ""
+        cancelamento = "<div style='margin-top:10px;color:#FBBF24'>Cancelamento solicitado. Aguardando o worker encerrar a etapa atual.</div>" if job.status == "running" and job.cancel_requested_at else ""
+        exclusao = "<div style='margin-top:10px;color:#FBBF24'>Exclusão pendente. O registro e os arquivos serão removidos quando o worker parar.</div>" if job.deletion_requested else ""
+        chunk_html = f"<div style='margin-top:12px;padding:10px;background:#101319;border-radius:8px'><small style='color:#9CA3AF'>Texto do chunk em processamento</small><div style='margin-top:5px'>{texto_chunk}</div></div>" if texto_chunk else ""
         return f"""
-        <div class='toast-banner {classe}' style='margin-bottom:10px'>{mensagem}</div>
-        <div style='background:#171A21;border:1px solid #262B36;border-radius:10px;padding:14px;color:#E5E7EB'>
-          <div style='display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap'>
-            <b>Detalhes da execução</b><span style='color:#9CA3AF'>ID: {_html_seguro(str(job.id))}</span>
+        <div class="toast-banner {classe}" style="margin-bottom:10px">{_html_seguro(mensagem)}</div>
+        <div style="background:#171A21;border:1px solid #303746;border-radius:12px;padding:16px;color:#E5E7EB">
+          <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center">
+            <b style="font-size:15px">Execução {str(job.id)[:8]}</b>
+            <span style="padding:5px 10px;border-radius:20px;background:#252B36;font-size:12px;font-weight:700">{_html_seguro(job.status.upper())}</span>
           </div>
-          <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:12px'>
-            <div><small style='color:#9CA3AF'>Status</small><div><b>{_html_seguro(job.status.upper())}</b></div></div>
-            <div><small style='color:#9CA3AF'>Tentativa</small><div><b>{job.attempt}/{job.max_attempts}</b></div></div>
-            <div><small style='color:#9CA3AF'>Worker</small><div><b>{_html_seguro(worker)}</b></div></div>
-            <div><small style='color:#9CA3AF'>Modo</small><div><b>{_html_seguro(modo)}</b></div></div>
-            <div><small style='color:#9CA3AF'>Criado em</small><div><b>{_html_seguro(criado)}</b></div></div>
-            <div><small style='color:#9CA3AF'>Última atualização</small><div><b>{_html_seguro(atualizado)}</b></div></div>
+          <div style="height:9px;background:#303746;border-radius:20px;overflow:hidden;margin-top:14px"><div style="height:100%;width:{percentual}%;background:#F97316;border-radius:20px;transition:width .3s"></div></div>
+          <div style="display:flex;justify-content:space-between;margin-top:6px;color:#9CA3AF;font-size:12px"><span>{percentual}% concluído</span><span>{_html_seguro(etapa)}</span></div>
+          <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:16px">
+            <div style="background:#101319;padding:10px;border-radius:8px"><small style="color:#9CA3AF">Chunk atual</small><div style="font-size:18px;font-weight:700">{chunk_label}</div></div>
+            <div style="background:#101319;padding:10px;border-radius:8px"><small style="color:#9CA3AF">Tempo decorrido</small><div style="font-size:18px;font-weight:700">{elapsed_label}</div></div>
+            <div style="background:#101319;padding:10px;border-radius:8px"><small style="color:#9CA3AF">Estimativa deste chunk</small><div style="font-size:18px;font-weight:700">{chunk_eta_label}</div></div>
+            <div style="background:#101319;padding:10px;border-radius:8px"><small style="color:#9CA3AF">Estimativa da tarefa</small><div style="font-size:18px;font-weight:700">{task_eta_label}</div></div>
           </div>
-          {status_msg}
-          <div style='margin-top:12px'><small style='color:#9CA3AF'>Texto enviado para síntese</small>
-            <div style='white-space:pre-wrap;max-height:110px;overflow:auto;margin-top:4px'>{_html_seguro(texto_job)}</div>
+          <div style="margin-top:14px;display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;color:#9CA3AF;font-size:12px">
+            <span>Tentativa: <b style="color:#E5E7EB">{job.attempt}/{job.max_attempts}</b></span><span>Worker: <b style="color:#E5E7EB">{_html_seguro(worker)}</b></span><span>Modo: <b style="color:#E5E7EB">{_html_seguro(modo)}</b></span><span>Criado: <b style="color:#E5E7EB">{_html_seguro(criado)}</b></span>
           </div>
+          {chunk_html}
+          <div style="margin-top:12px"><small style="color:#9CA3AF">Progresso</small><div>{_html_seguro(resumo)}</div></div>
+          {cancelamento}{exclusao}
+          <div style="margin-top:12px"><small style="color:#9CA3AF">Texto enviado para síntese</small><div style="white-space:pre-wrap;max-height:100px;overflow:auto;margin-top:4px">{_html_seguro(texto_job)}</div></div>
           {erro}
         </div>
         """
@@ -504,70 +535,76 @@ with gr.Blocks(title="Qwen3-TTS · Síntese de Voz") as demo:
         outputs=[toast_status, audio_output, status_timer, tabela_jobs]
     )
 
-    # Selecionar linha na tabela de Jobs para ouvir ou gerenciar
-    def selecionar_job_tabela(evt: gr.SelectData):
-        tabela_dados = tabela_jobs.value
-        if not tabela_dados or evt.index[0] >= len(tabela_dados):
-            return "", None
-        linha = tabela_dados[evt.index[0]]
-        full_uuid = linha[0]
-        audio_path = linha[6]
-        
-        caminho_audio = audio_path if (audio_path and os.path.exists(audio_path)) else None
-        return full_uuid, caminho_audio
+    # --- Monitoramento contínuo, seleção e ações seguras dos jobs ---
+    def _job_options():
+        jobs, _ = job_repo.list(offset=0, limit=50)
+        return [(f"{str(job.id)[:8]} · {job.status.upper()} · {(job.created_at.astimezone().strftime('%H:%M:%S') if job.created_at else '--:--:--')}", str(job.id)) for job in jobs]
 
-    tabela_jobs.select(
-        fn=selecionar_job_tabela,
-        outputs=[job_uuid_selecionado, player_job]
-    )
+    def _remover_audio_job(job):
+        candidatos = []
+        if job.output and isinstance(job.output, dict): candidatos.append(job.output.get("audio_path"))
+        if job.input and isinstance(job.input, dict): candidatos.append(job.input.get("output_path"))
+        raiz = OUTPUTS_DIR.resolve()
+        for candidato in candidatos:
+            if not isinstance(candidato, str) or not candidato.strip(): continue
+            try:
+                caminho = Path(candidato).resolve()
+                if os.path.commonpath([str(raiz), str(caminho)]) == str(raiz) and caminho.is_file(): caminho.unlink()
+            except (OSError, ValueError): continue
 
-    # Ações na Gestão de Jobs
-    def acao_cancelar_job(job_id_str: str):
-        if not job_id_str:
-            return "Selecione um job na tabela.", atualizar_tabela_jobs()
-        job_repo.request_cancellation(job_id=job_id_str, now=datetime.now(timezone.utc))
-        return f"Cancelamento solicitado para o job {job_id_str[:8]}", atualizar_tabela_jobs()
+    def processar_exclusoes_pendentes():
+        jobs, _ = job_repo.list(offset=0, limit=500)
+        for job in jobs:
+            if job.deletion_requested and job.status != "running":
+                _remover_audio_job(job)
+                job_repo.delete_job(job_id=str(job.id))
 
-    btn_cancelar_job.click(
-        fn=acao_cancelar_job,
-        inputs=[job_uuid_selecionado],
-        outputs=[toast_status, tabela_jobs]
-    )
+    def renderizar_job_selecionado(job_id):
+        if not job_id: return "<div class='toast-banner toast-info'>Selecione uma tarefa para acompanhar os detalhes.</div>", None, gr.update(interactive=False), gr.update(interactive=False)
+        job = job_repo.get(job_id)
+        if not job: return "<div class='toast-banner toast-error'>Esta tarefa não existe mais ou já foi excluída.</div>", None, gr.update(interactive=False), gr.update(interactive=False)
+        audio_path = None
+        if job.status == "succeeded" and job.output and isinstance(job.output, dict):
+            candidate = job.output.get("audio_path")
+            if candidate and os.path.isfile(candidate): audio_path = candidate
+        return _detalhes_job(job, "Acompanhamento atualizado."), audio_path, gr.update(interactive=job.status in ("queued", "retryable", "running")), gr.update(interactive=True)
 
-    # Exclusão em Cascata (Deleta o Job e apaga o arquivo de áudio associado)
-    def acao_deletar_job(job_id_str: str):
-        if not job_id_str:
-            return "Selecione um job na tabela.", atualizar_tabela_jobs(), None
-        
-        job = job_repo.get(job_id_str)
-        if job and job.output and isinstance(job.output, dict):
-            audio_p = job.output.get("audio_path")
-            if audio_p and os.path.exists(audio_p):
-                try:
-                    os.remove(audio_p)
-                except Exception:
-                    pass
+    def atualizar_monitor_jobs(job_id_atual):
+        processar_exclusoes_pendentes()
+        tabela = atualizar_tabela_jobs()
+        options = _job_options()
+        ids = [value for _, value in options]
+        selecionado = job_id_atual if job_id_atual in ids else (ids[0] if ids else None)
+        detalhes, _, _, _ = renderizar_job_selecionado(selecionado)
+        return tabela, gr.update(choices=options, value=selecionado), detalhes
 
-        # Remove fisicamente do SQLite (executando comando SQL direto no repositório)
-        try:
-            with job_repo._get_conn() as conn:
-                conn.execute("DELETE FROM jobs WHERE id = ?", (job_id_str,))
-        except Exception:
-            pass
+    def acao_cancelar_job(job_id_str):
+        if not job_id_str: return "<div class='toast-banner toast-error'>Selecione uma tarefa antes de cancelar.</div>", "<div class='toast-banner toast-info'>Nenhuma tarefa selecionada.</div>", atualizar_tabela_jobs()
+        job = job_repo.request_cancellation(job_id=job_id_str, now=datetime.now(timezone.utc))
+        if not job: mensagem = "Tarefa não encontrada."
+        elif job.status == "running": mensagem = "Cancelamento solicitado. Se o modelo estiver no meio de uma geração, o worker concluirá essa etapa antes de interromper a tarefa."
+        elif job.status == "cancelled": mensagem = "Tarefa cancelada."
+        else: mensagem = f"Solicitação registrada. Status atual: {job.status}."
+        detalhes = _detalhes_job(job, mensagem, "toast-info") if job else mensagem
+        return f"<div class='toast-banner toast-info'>{_html_seguro(mensagem)}</div>", detalhes, atualizar_tabela_jobs()
 
-        return f"Job {job_id_str[:8]} e respetivo áudio eliminados.", atualizar_tabela_jobs(), None
+    def acao_deletar_job(job_id_str):
+        if not job_id_str: return "<div class='toast-banner toast-error'>Selecione uma tarefa antes de excluir.</div>", atualizar_tabela_jobs(), "<div class='toast-banner toast-info'>Nenhuma tarefa selecionada.</div>", None, None
+        job = job_repo.request_deletion(job_id=job_id_str, now=datetime.now(timezone.utc))
+        if not job: return "<div class='toast-banner toast-error'>Tarefa não encontrada.</div>", atualizar_tabela_jobs(), "<div class='toast-banner toast-error'>Tarefa não encontrada.</div>", None, None
+        if job.status == "running":
+            mensagem = "Exclusão solicitada. O cancelamento foi enviado ao worker. Assim que a execução parar, o registro e o áudio temporário serão removidos automaticamente."
+            return f"<div class='toast-banner toast-info'>{_html_seguro(mensagem)}</div>", atualizar_tabela_jobs(), _detalhes_job(job, mensagem), job_id_str, None
+        _remover_audio_job(job)
+        excluido = job_repo.delete_job(job_id=job_id_str)
+        mensagem = "Job e arquivo de áudio excluídos com sucesso." if excluido else "Exclusão solicitada. O painel tentará novamente após a finalização."
+        return f"<div class='toast-banner toast-success'>{_html_seguro(mensagem)}</div>", atualizar_tabela_jobs(), "<div class='toast-banner toast-info'>Selecione outra tarefa para acompanhar.</div>", None, None
 
-    btn_deletar_job.click(
-        fn=acao_deletar_job,
-        inputs=[job_uuid_selecionado],
-        outputs=[toast_status, tabela_jobs, player_job]
-    )
-
-    btn_atualizar_jobs.click(
-        fn=atualizar_tabela_jobs,
-        outputs=[tabela_jobs]
-    )
-
+    job_selector.change(fn=renderizar_job_selecionado, inputs=[job_selector], outputs=[job_details, player_job, btn_cancelar_job, btn_deletar_job])
+    btn_cancelar_job.click(fn=acao_cancelar_job, inputs=[job_selector], outputs=[toast_status, job_details, tabela_jobs])
+    btn_deletar_job.click(fn=acao_deletar_job, inputs=[job_selector], outputs=[toast_status, tabela_jobs, job_details, job_selector, player_job])
+    btn_atualizar_jobs.click(fn=atualizar_monitor_jobs, inputs=[job_selector], outputs=[tabela_jobs, job_selector, job_details])
+    jobs_timer.tick(fn=atualizar_monitor_jobs, inputs=[job_selector], outputs=[tabela_jobs, job_selector, job_details])
     # Cadastrar nova voz
     def salvar_nova_voz_action(nome: str, audio: str, transcricao: str):
         if not nome or not audio or not transcricao:
