@@ -23,6 +23,11 @@ class JobCancelled(Exception):
     pass
 
 
+class PermanentJobError(Exception):
+    """Falha que não deve consumir novas tentativas automáticas."""
+
+
+
 class JobRepository(Protocol):
     def claim_next(
         self,
@@ -39,6 +44,9 @@ class JobRepository(Protocol):
         self, *, job_id: str, worker_id: str, output: dict[str, Any], now: datetime
     ) -> bool: ...
     def fail(
+        self, *, job_id: str, worker_id: str, error_message: str, now: datetime
+    ) -> bool: ...
+    def fail_permanently(
         self, *, job_id: str, worker_id: str, error_message: str, now: datetime
     ) -> bool: ...
     def cancel(self, *, job_id: str, worker_id: str, now: datetime) -> bool: ...
@@ -209,6 +217,34 @@ class PersistentWorker:
                 self._logger.warning("JOB_CANCELLED id=%s persisted=%s", job_id, persisted)
             except Exception:
                 self._logger.exception("JOB_CANCEL_PERSIST_FAILED id=%s", job_id)
+
+        except PermanentJobError as error:
+            error_trace = traceback.format_exc()
+            error_details = (
+                f"Fase: {phase}\\n"
+                f"Tipo: {type(error).__name__}\\n"
+                f"Erro permanente: {error}\\n\\n"
+                f"Traceback completo:\\n{error_trace}"
+            )
+            self._logger.error(
+                "JOB_PERMANENT_FAILURE id=%s phase=%s error=%s\\n%s",
+                job_id, phase, error, error_trace,
+            )
+            try:
+                persisted = self._repository.fail_permanently(
+                    job_id=job_id,
+                    worker_id=self._worker_id,
+                    error_message=error_details[-30000:],
+                    now=_utcnow(),
+                )
+                self._logger.error(
+                    "JOB_PERMANENT_FAILURE_PERSISTED id=%s persisted=%s",
+                    job_id, persisted,
+                )
+            except Exception:
+                self._logger.exception(
+                    "JOB_PERMANENT_FAILURE_COULD_NOT_BE_PERSISTED id=%s", job_id
+                )
 
         except Exception as error:
             error_trace = traceback.format_exc()
