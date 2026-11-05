@@ -126,9 +126,11 @@ def make_tts_handler(
                     output_path=output_path,
                     temperature=temperature,
                     checkpoint=execution.raise_if_cancelled,
+                    progress_callback=execution.report_progress,
                 )
             else:
                 logger.info("SYNTHESIS_DIRECT_BEGIN job_id=%s", job.id)
+                execution.report_progress({"phase": "synthesizing", "event": "direct_started"})
                 audio_path = engine.synthesize(
                     ref_audio_path=ref_audio_path,
                     ref_text=ref_text,
@@ -137,6 +139,7 @@ def make_tts_handler(
                     temperature=temperature,
                     checkpoint=execution.raise_if_cancelled,
                 )
+                execution.report_progress({"phase": "finalizing", "event": "direct_completed"})
 
             execution.raise_if_cancelled()
             execution.heartbeat()
