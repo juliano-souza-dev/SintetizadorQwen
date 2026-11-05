@@ -82,51 +82,143 @@ class PersistentWorker:
 
     def run_once(self) -> bool:
         now = _utcnow()
-        recovered = self._repository.recover_abandoned(
-            before=now - self._heartbeat_timeout, now=now
-        )
-        if recovered:
-            self._logger.info(f"Jobs recuperados de timeout: {recovered}")
-
-        if self._allowed_kinds is None and not self._excluded_kinds:
-            job = self._repository.claim_next(worker_id=self._worker_id, now=now)
-        else:
-            job = self._repository.claim_next(
-                worker_id=self._worker_id,
-                now=now,
-                allowed_kinds=self._allowed_kinds,
-                excluded_kinds=self._excluded_kinds,
+        try:
+            recovered = self._repository.recover_abandoned(
+                before=now - self._heartbeat_timeout, now=now
             )
+            if recovered:
+                self._logger.warning("Jobs recuperados de timeout: %s", recovered)
+
+            if self._allowed_kinds is None and not self._excluded_kinds:
+                job = self._repository.claim_next(worker_id=self._worker_id, now=now)
+            else:
+                job = self._repository.claim_next(
+                    worker_id=self._worker_id,
+                    now=now,
+                    allowed_kinds=self._allowed_kinds,
+                    excluded_kinds=self._excluded_kinds,
+                )
+        except Exception:
+            self._logger.exception(
+                "ERRO AO CONSULTAR/REIVINDICAR JOB NA FILA. "
+                "O worker continuará tentando após o próximo intervalo."
+            )
+            return False
 
         if job is None:
             return False
 
+        import json
+        import traceback
+        from pathlib import Path
+
+        job_id = str(job.id)
+        log_dir = Path(__file__).resolve().parent / "logs" / "jobs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        job_log_path = log_dir / f"{job_id}.log"
+        job_handler = logging.FileHandler(job_log_path, encoding="utf-8")
+        job_handler.setLevel(logging.DEBUG)
+        job_handler.setFormatter(logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+        ))
+        root_logger = logging.getLogger()
+        root_logger.addHandler(job_handler)
+
         execution = JobExecution(self._repository, job, self._worker_id)
-        self._logger.info(f"Iniciando job: {job.id} (kind={job.kind}, tentativa={job.attempt})")
+        phase = "job_start"
+        self._logger.info(
+            "JOB_START id=%s kind=%s attempt=%s/%s worker=%s log=%s",
+            job_id, job.kind, job.attempt, job.max_attempts,
+            self._worker_id, job_log_path
+        )
         try:
+            self._logger.info(
+                "JOB_INPUT id=%s payload=%s",
+                job_id,
+                json.dumps(job.input, ensure_ascii=False, default=str)
+            )
+            phase = "cancellation_check_before_handler"
             execution.raise_if_cancelled()
+
+            phase = "handler_lookup"
             handler = self._handlers.get(job.kind)
             if handler is None:
-                raise ValueError(f"Tipo de job nao suportado: {job.kind}")
+                raise ValueError(f"Tipo de job não suportado: {job.kind}")
 
+            phase = "handler_execution"
+            self._logger.info("JOB_HANDLER_BEGIN id=%s phase=%s", job_id, phase)
             output = handler(job, execution)
+            self._logger.info(
+                "JOB_HANDLER_END id=%s output=%s",
+                job_id, json.dumps(output, ensure_ascii=False, default=str)
+            )
+
+            phase = "cancellation_check_after_handler"
             execution.raise_if_cancelled()
 
-            self._repository.succeed(
-                job_id=str(job.id), worker_id=self._worker_id, output=output, now=_utcnow()
+            phase = "persist_success"
+            persisted = self._repository.succeed(
+                job_id=job_id, worker_id=self._worker_id,
+                output=output, now=_utcnow()
             )
-            self._logger.info(f"Job concluido com sucesso: {job.id}")
+            if not persisted:
+                self._logger.error(
+                    "JOB_SUCCESS_NOT_PERSISTED id=%s worker=%s. "
+                    "O handler terminou, mas o repositório recusou a transição.",
+                    job_id, self._worker_id
+                )
+            else:
+                self._logger.info("JOB_SUCCEEDED id=%s", job_id)
+
         except JobCancelled:
-            self._repository.cancel(job_id=str(job.id), worker_id=self._worker_id, now=_utcnow())
-            self._logger.warning(f"Job cancelado: {job.id}")
+            phase = "persist_cancelled"
+            try:
+                persisted = self._repository.cancel(
+                    job_id=job_id, worker_id=self._worker_id, now=_utcnow()
+                )
+                self._logger.warning(
+                    "JOB_CANCELLED id=%s persisted=%s", job_id, persisted
+                )
+            except Exception:
+                self._logger.exception(
+                    "JOB_CANCEL_PERSIST_FAILED id=%s", job_id
+                )
+
         except Exception as error:
-            self._repository.fail(
-                job_id=str(job.id),
-                worker_id=self._worker_id,
-                error_message=str(error),
-                now=_utcnow(),
+            error_trace = traceback.format_exc()
+            error_details = (
+                f"Fase: {phase}\\n"
+                f"Tipo: {type(error).__name__}\\n"
+                f"Erro: {error}\\n\\n"
+                f"Traceback completo:\\n{error_trace}"
             )
-            self._logger.error(f"Job falhou: {job.id} - {error}", exc_info=True)
+            self._logger.error(
+                "JOB_FAILED id=%s phase=%s type=%s error=%s\\n%s",
+                job_id, phase, type(error).__name__, error, error_trace
+            )
+            try:
+                persisted = self._repository.fail(
+                    job_id=job_id,
+                    worker_id=self._worker_id,
+                    error_message=error_details[-30000:],
+                    now=_utcnow(),
+                )
+                self._logger.error(
+                    "JOB_FAILURE_PERSISTED id=%s persisted=%s", job_id, persisted
+                )
+            except Exception:
+                self._logger.exception(
+                    "JOB_FAILURE_COULD_NOT_BE_PERSISTED id=%s. "
+                    "O traceback permanece no log individual do job.",
+                    job_id
+                )
+        finally:
+            self._logger.info(
+                "JOB_END id=%s log_file=%s", job_id, job_log_path
+            )
+            root_logger.removeHandler(job_handler)
+            job_handler.flush()
+            job_handler.close()
 
         return True
 
@@ -135,6 +227,15 @@ class PersistentWorker:
             raise ValueError("poll_interval_seconds deve ser positivo")
         self._logger.info("Worker iniciado e monitorando a fila...")
         while not stop_event.is_set():
-            if not self.run_once():
+            try:
+                processed = self.run_once()
+            except Exception:
+                # Última barreira: nenhuma exceção inesperada pode matar silenciosamente o loop.
+                self._logger.exception(
+                    "ERRO NÃO TRATADO NO LOOP PRINCIPAL DO WORKER. "
+                    "O processo continuará ativo e tentará novamente."
+                )
+                processed = False
+            if not processed:
                 stop_event.wait(poll_interval_seconds)
         self._logger.info("Worker finalizado.")
