@@ -62,7 +62,7 @@ crash_report.txt
 .idea/
 *.sublime-project
 *.sublime-workspace
-
+data/
 # Windows
 Thumbs.db
 ehthumbs.db
