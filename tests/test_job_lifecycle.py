@@ -167,6 +167,22 @@ class JobLifecycleTests(unittest.TestCase):
         self.assertTrue(requested.deletion_requested)
         self.assertTrue(self.repository.delete_job(job_id=str(job.id)))
         self.assertIsNone(self.repository.get(str(job.id)))
+
+    def test_missing_job_is_reported_as_cancellation_to_old_worker(self) -> None:
+        job = self.repository.enqueue(kind="tts_generate", input={})
+        self.repository.claim_next(worker_id="worker-a", now=self.now())
+        self.assertTrue(self.repository.delete_job(job_id=str(job.id)))
+        self.assertTrue(self.repository.cancellation_requested(
+            job_id=str(job.id), worker_id="worker-a"
+        ))
+
+    def test_lost_worker_ownership_is_reported_as_cancellation(self) -> None:
+        job = self.repository.enqueue(kind="tts_generate", input={})
+        self.repository.claim_next(worker_id="worker-a", now=self.now())
+        self.repository.request_cancellation(job_id=str(job.id), now=self.now())
+        self.assertTrue(self.repository.cancellation_requested(
+            job_id=str(job.id), worker_id="different-worker"
+        ))
     def test_idempotency_key_returns_existing_job(self) -> None:
         first = self.repository.enqueue(
             kind="tts_generate", input={"text": "first"}, idempotency_key="request-1"
