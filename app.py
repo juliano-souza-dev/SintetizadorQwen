@@ -597,12 +597,16 @@ with gr.Blocks(title="Qwen3-TTS · Síntese de Voz") as demo:
         if not job_id_str: return "<div class='toast-banner toast-error'>Selecione uma tarefa antes de excluir.</div>", atualizar_tabela_jobs(), "<div class='toast-banner toast-info'>Nenhuma tarefa selecionada.</div>", None, None
         job = job_repo.request_deletion(job_id=job_id_str, now=datetime.now(timezone.utc))
         if not job: return "<div class='toast-banner toast-error'>Tarefa não encontrada.</div>", atualizar_tabela_jobs(), "<div class='toast-banner toast-error'>Tarefa não encontrada.</div>", None, None
-        if job.status == "running":
-            mensagem = "Exclusão solicitada. O cancelamento foi enviado ao worker. Assim que a execução parar, o registro e o áudio temporário serão removidos automaticamente."
-            return f"<div class='toast-banner toast-info'>{_html_seguro(mensagem)}</div>", atualizar_tabela_jobs(), _detalhes_job(job, mensagem), job_id_str, None
-        _remover_audio_job(job)
+        estava_rodando = job.status == "running"
+        if estava_rodando:
+            mensagem = "Job removido do painel. O worker recebeu o cancelamento; se estiver dentro de uma chamada nativa do Qwen, ela poderá terminar em segundo plano antes de liberar os recursos."
+        else:
+            _remover_audio_job(job)
+            mensagem = "Job e arquivo de áudio excluídos com sucesso."
         excluido = job_repo.delete_job(job_id=job_id_str)
-        mensagem = "Job e arquivo de áudio excluídos com sucesso." if excluido else "Exclusão solicitada. O painel tentará novamente após a finalização."
+        if not excluido:
+            mensagem = "Não foi possível excluir o job. Atualize o painel e tente novamente."
+            return f"<div class='toast-banner toast-error'>{_html_seguro(mensagem)}</div>", atualizar_tabela_jobs(), _detalhes_job(job, mensagem, "toast-error"), job_id_str, None
         return f"<div class='toast-banner toast-success'>{_html_seguro(mensagem)}</div>", atualizar_tabela_jobs(), "<div class='toast-banner toast-info'>Selecione outra tarefa para acompanhar.</div>", None, None
 
     job_selector.change(fn=renderizar_job_selecionado, inputs=[job_selector], outputs=[job_details, player_job, btn_cancelar_job, btn_deletar_job])
