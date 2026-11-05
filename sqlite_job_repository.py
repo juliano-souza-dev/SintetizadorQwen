@@ -260,15 +260,24 @@ class SqliteJobRepository:
             return result.rowcount == 1
 
     def cancellation_requested(self, *, job_id: str, worker_id: str) -> bool:
+        """Treat cancellation, deletion, and lease loss as a stop signal."""
         with self._connection() as conn:
             row = conn.execute(
                 """
-                SELECT cancellation_requested FROM jobs
-                WHERE id = ? AND worker_id = ? AND status = 'running'
+                SELECT worker_id, status, cancellation_requested
+                FROM jobs
+                WHERE id = ?
                 """,
-                (job_id, worker_id),
+                (job_id,),
             ).fetchone()
-            return bool(row["cancellation_requested"]) if row else False
+
+            # A worker must never continue inference after its job/lease disappears
+            # or ownership changes. This also protects against out-of-band deletion.
+            if row is None:
+                return True
+            if row["worker_id"] != worker_id or row["status"] != "running":
+                return True
+            return bool(row["cancellation_requested"])
 
     def request_cancellation(self, *, job_id: str, now: datetime) -> Job | None:
         now_str = now.isoformat()
@@ -327,9 +336,12 @@ class SqliteJobRepository:
         return self.get(job_id)
 
     def delete_job(self, *, job_id: str) -> bool:
-        """Remove o registro imediatamente, mesmo que um worker ainda esteja executando."""
+        """Remove jobs somente depois que o worker deixa o estado running."""
         with self._connection() as conn:
-            result = conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+            result = conn.execute(
+                "DELETE FROM jobs WHERE id = ? AND status != 'running'",
+                (job_id,),
+            )
             return result.rowcount == 1
 
     def succeed(

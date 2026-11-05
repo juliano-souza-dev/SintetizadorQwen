@@ -142,7 +142,7 @@ class JobLifecycleTests(unittest.TestCase):
         self.assertTrue(self.repository.delete_job(job_id=str(job.id)))
         self.assertIsNone(self.repository.get(str(job.id)))
 
-    def test_running_job_can_be_deleted_immediately(self) -> None:
+    def test_running_job_cannot_be_deleted_before_worker_stops(self) -> None:
         job = self.repository.enqueue(kind="tts_generate", input={})
         self.repository.claim_next(worker_id="worker-a", now=self.now())
         requested = self.repository.request_deletion(job_id=str(job.id), now=self.now())
@@ -151,11 +151,14 @@ class JobLifecycleTests(unittest.TestCase):
         self.assertTrue(self.repository.cancellation_requested(
             job_id=str(job.id), worker_id="worker-a"
         ))
-        self.assertTrue(self.repository.delete_job(job_id=str(job.id)))
-        self.assertIsNone(self.repository.get(str(job.id)))
-        self.assertFalse(self.repository.heartbeat(
+
+        self.assertFalse(self.repository.delete_job(job_id=str(job.id)))
+        self.assertIsNotNone(self.repository.get(str(job.id)))
+        self.assertTrue(self.repository.cancel(
             job_id=str(job.id), worker_id="worker-a", now=self.now()
         ))
+        self.assertTrue(self.repository.delete_job(job_id=str(job.id)))
+        self.assertIsNone(self.repository.get(str(job.id)))
 
     def test_queued_job_deletion_removes_it_without_worker(self) -> None:
         job = self.repository.enqueue(kind="tts_generate", input={})
@@ -164,6 +167,24 @@ class JobLifecycleTests(unittest.TestCase):
         self.assertTrue(requested.deletion_requested)
         self.assertTrue(self.repository.delete_job(job_id=str(job.id)))
         self.assertIsNone(self.repository.get(str(job.id)))
+
+    def test_missing_job_is_reported_as_cancellation_to_old_worker(self) -> None:
+        job = self.repository.enqueue(kind="tts_generate", input={})
+        self.repository.claim_next(worker_id="worker-a", now=self.now())
+        # Simulate legacy/out-of-band deletion that bypasses delete_job's guard.
+        with self.repository._connection() as conn:
+            conn.execute("DELETE FROM jobs WHERE id = ?", (str(job.id),))
+        self.assertTrue(self.repository.cancellation_requested(
+            job_id=str(job.id), worker_id="worker-a"
+        ))
+
+    def test_lost_worker_ownership_is_reported_as_cancellation(self) -> None:
+        job = self.repository.enqueue(kind="tts_generate", input={})
+        self.repository.claim_next(worker_id="worker-a", now=self.now())
+        self.repository.request_cancellation(job_id=str(job.id), now=self.now())
+        self.assertTrue(self.repository.cancellation_requested(
+            job_id=str(job.id), worker_id="different-worker"
+        ))
     def test_idempotency_key_returns_existing_job(self) -> None:
         first = self.repository.enqueue(
             kind="tts_generate", input={"text": "first"}, idempotency_key="request-1"

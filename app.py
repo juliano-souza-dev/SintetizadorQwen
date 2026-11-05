@@ -599,14 +599,25 @@ with gr.Blocks(title="Qwen3-TTS · Síntese de Voz") as demo:
         if not job: return "<div class='toast-banner toast-error'>Tarefa não encontrada.</div>", atualizar_tabela_jobs(), "<div class='toast-banner toast-error'>Tarefa não encontrada.</div>", None, None
         estava_rodando = job.status == "running"
         if estava_rodando:
-            mensagem = "Job removido do painel. O worker recebeu o cancelamento; se estiver dentro de uma chamada nativa do Qwen, ela poderá terminar em segundo plano antes de liberar os recursos."
-        else:
-            _remover_audio_job(job)
-            mensagem = "Job e arquivo de áudio excluídos com sucesso."
+            mensagem = (
+                "Cancelamento e exclusão solicitados. A inferência será interrompida "
+                "e o job será removido automaticamente quando o worker confirmar "
+                "o cancelamento."
+            )
+            return (
+                f"<div class='toast-banner toast-info'>{_html_seguro(mensagem)}</div>",
+                atualizar_tabela_jobs(),
+                _detalhes_job(job, mensagem, "toast-info"),
+                job_id_str,
+                None,
+            )
+
+        _remover_audio_job(job)
         excluido = job_repo.delete_job(job_id=job_id_str)
         if not excluido:
             mensagem = "Não foi possível excluir o job. Atualize o painel e tente novamente."
             return f"<div class='toast-banner toast-error'>{_html_seguro(mensagem)}</div>", atualizar_tabela_jobs(), _detalhes_job(job, mensagem, "toast-error"), job_id_str, None
+        mensagem = "Job e arquivo de áudio excluídos com sucesso."
         return f"<div class='toast-banner toast-success'>{_html_seguro(mensagem)}</div>", atualizar_tabela_jobs(), "<div class='toast-banner toast-info'>Selecione outra tarefa para acompanhar.</div>", None, None
 
     job_selector.change(fn=renderizar_job_selecionado, inputs=[job_selector], outputs=[job_details, player_job, btn_cancelar_job, btn_deletar_job])

@@ -115,6 +115,91 @@ class PersistentWorkerTests(unittest.TestCase):
         self.assertTrue(worker.run_once())
         self.assertEqual(self.repository.get(str(job.id)).status, "cancelled")
 
+    def test_next_job_runs_after_regular_failure(self) -> None:
+        failed_job = self.repository.enqueue(
+            kind="tts_generate", input={}, max_attempts=1
+        )
+        next_job = self.repository.enqueue(kind="tts_generate", input={})
+        calls = []
+
+        def handler(job, _execution):
+            calls.append(str(job.id))
+            if str(job.id) == str(failed_job.id):
+                raise ValueError("synthetic generation failure")
+            return {"audio_path": "next-job.wav"}
+
+        worker = PersistentWorker(
+            self.repository,
+            "test-worker",
+            {"tts_generate": handler},
+            logger=logging.getLogger("test.persistent_worker.next_after_failure"),
+            job_log_dir=self.log_dir,
+        )
+
+        self.assertTrue(worker.run_once())
+        self.assertEqual(self.repository.get(str(failed_job.id)).status, "failed")
+        self.assertTrue(worker.run_once())
+        self.assertEqual(calls, [str(failed_job.id), str(next_job.id)])
+        self.assertEqual(self.repository.get(str(next_job.id)).status, "succeeded")
+
+    def test_next_job_runs_after_permanent_failure(self) -> None:
+        failed_job = self.repository.enqueue(kind="tts_generate", input={})
+        next_job = self.repository.enqueue(kind="tts_generate", input={})
+        calls = []
+
+        def handler(job, _execution):
+            calls.append(str(job.id))
+            if str(job.id) == str(failed_job.id):
+                raise PermanentJobError("synthetic permanent inference failure")
+            return {"audio_path": "next-job.wav"}
+
+        worker = PersistentWorker(
+            self.repository,
+            "test-worker",
+            {"tts_generate": handler},
+            logger=logging.getLogger("test.persistent_worker.next_after_permanent_failure"),
+            job_log_dir=self.log_dir,
+        )
+
+        self.assertTrue(worker.run_once())
+        self.assertEqual(self.repository.get(str(failed_job.id)).status, "failed")
+        self.assertTrue(worker.run_once())
+        self.assertEqual(calls, [str(failed_job.id), str(next_job.id)])
+        self.assertEqual(self.repository.get(str(next_job.id)).status, "succeeded")
+
+    def test_next_job_runs_after_running_job_is_deleted(self) -> None:
+        deleted_job = self.repository.enqueue(kind="tts_generate", input={})
+        next_job = self.repository.enqueue(kind="tts_generate", input={})
+        calls = []
+
+        def handler(job, execution):
+            calls.append(str(job.id))
+            if str(job.id) == str(deleted_job.id):
+                requested = self.repository.request_deletion(
+                    job_id=str(job.id), now=self.now()
+                )
+                self.assertEqual(requested.status, "running")
+                execution.raise_if_cancelled()
+            return {"audio_path": "next-job.wav"}
+
+        worker = PersistentWorker(
+            self.repository,
+            "test-worker",
+            {"tts_generate": handler},
+            logger=logging.getLogger("test.persistent_worker.next_after_deletion"),
+            job_log_dir=self.log_dir,
+        )
+
+        self.assertTrue(worker.run_once())
+        cancelled = self.repository.get(str(deleted_job.id))
+        self.assertEqual(cancelled.status, "cancelled")
+        self.assertTrue(cancelled.deletion_requested)
+        self.assertTrue(self.repository.delete_job(job_id=str(deleted_job.id)))
+
+        self.assertTrue(worker.run_once())
+        self.assertEqual(calls, [str(deleted_job.id), str(next_job.id)])
+        self.assertEqual(self.repository.get(str(next_job.id)).status, "succeeded")
+
 
 if __name__ == "__main__":
     unittest.main()
