@@ -28,16 +28,17 @@ def _keep_lease(
         while not stop_event.wait(interval_seconds):
             try:
                 execution.heartbeat()
-                execution.raise_if_cancelled()
+                try:
+                    execution.raise_if_cancelled()
+                except JobCancelled as error:
+                    # A inferência nativa não pode ser interrompida com segurança no meio da chamada.
+                    # Mantemos o lease vivo e entregamos o cancelamento quando a etapa atual retornar.
+                    if not any(isinstance(item, JobCancelled) for item in heartbeat_errors):
+                        heartbeat_errors.append(error)
+                        logger.warning("CANCEL_REQUESTED_DURING_INFERENCE job_id=%s; aguardando etapa atual.", execution.job_id)
             except BaseException as error:
                 heartbeat_errors.append(error)
-                if isinstance(error, JobCancelled):
-                    logger.warning("Cancelamento detectado durante a execução do job %s.", execution.job_id)
-                else:
-                    logger.exception(
-                        "LEASE_HEARTBEAT_FAILED job_id=%s. A execução perdeu a confirmação da reserva.",
-                        execution.job_id,
-                    )
+                logger.exception("LEASE_HEARTBEAT_FAILED job_id=%s. A execução perdeu a confirmação da reserva.", execution.job_id)
                 stop_event.set()
                 return
 
