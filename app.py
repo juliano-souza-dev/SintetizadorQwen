@@ -417,6 +417,11 @@ with gr.Blocks(title="Qwen3-TTS · Síntese de Voz") as demo:
         modo = "Chunking por idioma" if entrada.get("chunks") else "Síntese direta"
         criado = job.created_at.astimezone().strftime("%d/%m/%Y %H:%M:%S") if job.created_at else "Não informado"
         worker = job.worker_id or ("Aguardando worker" if job.status == "queued" else "Não identificado")
+        if job.heartbeat_at:
+            heartbeat_age = max(0, int((datetime.now(timezone.utc) - job.heartbeat_at).total_seconds()))
+            sinal_worker = f"há {_formatar_duracao(heartbeat_age)}"
+        else:
+            sinal_worker = "ainda não recebido"
         progress = job.progress or {}
         chunk_eta, task_eta, chunk_elapsed, _ = _estimativas_progresso(job)
         etapa, resumo = _resumo_progresso(job)
@@ -452,7 +457,7 @@ with gr.Blocks(title="Qwen3-TTS · Síntese de Voz") as demo:
             <div style="background:#101319;padding:10px;border-radius:8px"><small style="color:#9CA3AF">Estimativa da tarefa</small><div style="font-size:18px;font-weight:700">{task_eta_label}</div></div>
           </div>
           <div style="margin-top:14px;display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;color:#9CA3AF;font-size:12px">
-            <span>Tentativa: <b style="color:#E5E7EB">{job.attempt}/{job.max_attempts}</b></span><span>Worker: <b style="color:#E5E7EB">{_html_seguro(worker)}</b></span><span>Modo: <b style="color:#E5E7EB">{_html_seguro(modo)}</b></span><span>Criado: <b style="color:#E5E7EB">{_html_seguro(criado)}</b></span>
+            <span>Tentativa: <b style="color:#E5E7EB">{job.attempt}/{job.max_attempts}</b></span><span>Worker: <b style="color:#E5E7EB">{_html_seguro(worker)}</b></span><span>Sinal do worker: <b style="color:#E5E7EB">{_html_seguro(sinal_worker)}</b></span><span>Modo: <b style="color:#E5E7EB">{_html_seguro(modo)}</b></span><span>Criado: <b style="color:#E5E7EB">{_html_seguro(criado)}</b></span>
           </div>
           {chunk_html}
           <div style="margin-top:12px"><small style="color:#9CA3AF">Progresso</small><div>{_html_seguro(resumo)}</div></div>
