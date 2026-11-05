@@ -382,8 +382,7 @@ with gr.Blocks(title="Qwen3-TTS · Síntese de Voz") as demo:
         outputs=[toast_status, active_job_id, status_timer, tabela_jobs]
     )
 
-<<<<<<< HEAD
-    # 2. Polling de Status do Job (Timer a cada 2s)
+    # Polling do job ativo com detalhes da execução
     def _html_seguro(valor):
         import html
         return html.escape(str(valor or ""))
@@ -401,6 +400,12 @@ with gr.Blocks(title="Qwen3-TTS · Síntese de Voz") as demo:
             f"<p style='color:#F87171;margin:8px 0 0'><b>Erro:</b> {_html_seguro(job.error_message)}</p>"
             if job.error_message else ""
         )
+        status_msg = ""
+        if job.output and isinstance(job.output, dict) and job.output.get("status_msg"):
+            status_msg = (
+                f"<div style='margin-top:8px'><small style='color:#9CA3AF'>Etapa informada pelo worker</small>"
+                f"<div>{_html_seguro(job.output.get('status_msg'))}</div></div>"
+            )
         return f"""
         <div class='toast-banner {classe}' style='margin-bottom:10px'>{mensagem}</div>
         <div style='background:#171A21;border:1px solid #262B36;border-radius:10px;padding:14px;color:#E5E7EB'>
@@ -415,6 +420,7 @@ with gr.Blocks(title="Qwen3-TTS · Síntese de Voz") as demo:
             <div><small style='color:#9CA3AF'>Criado em</small><div><b>{_html_seguro(criado)}</b></div></div>
             <div><small style='color:#9CA3AF'>Última atualização</small><div><b>{_html_seguro(atualizado)}</b></div></div>
           </div>
+          {status_msg}
           <div style='margin-top:12px'><small style='color:#9CA3AF'>Texto enviado para síntese</small>
             <div style='white-space:pre-wrap;max-height:110px;overflow:auto;margin-top:4px'>{_html_seguro(texto_job)}</div>
           </div>
@@ -422,81 +428,69 @@ with gr.Blocks(title="Qwen3-TTS · Síntese de Voz") as demo:
         </div>
         """
 
-    def checar_status_job(job_id_str: str | None, meta: dict):
-=======
-    # Polling global do job ativo para atualizar o player na aba de síntese quando concluído
     def checar_status_ativo(job_id_str: str | None):
->>>>>>> b83f554 (ok)
         if not job_id_str:
-            return gr.update(), gr.Timer(active=False), atualizar_tabela_jobs()
-        
+            return gr.update(), gr.update(), gr.Timer(active=False), atualizar_tabela_jobs()
+
         job = job_repo.get(job_id_str)
         if not job:
-            return gr.update(), gr.Timer(active=False), atualizar_tabela_jobs()
+            return gr.update(), gr.update(), gr.Timer(active=False), atualizar_tabela_jobs()
 
-<<<<<<< HEAD
+        tabela = atualizar_tabela_jobs()
+
         if job.status == "queued":
             return (
                 _detalhes_job(job, "⏳ Na fila. O worker ainda não assumiu esta tarefa."),
-                None,
                 gr.update(),
-                gr.Timer(active=True)
+                gr.Timer(active=True),
+                tabela
             )
 
         if job.status == "running":
             return (
-                _detalhes_job(job, "⚙️ WORKER ATIVO: tarefa em processamento. A última atualização confirma a atividade do worker."),
-                None,
+                _detalhes_job(job, "⚙️ WORKER ATIVO: tarefa em processamento. A atualização do job indica atividade recente."),
                 gr.update(),
-                gr.Timer(active=True)
+                gr.Timer(active=True),
+                tabela
             )
 
         if job.status == "succeeded":
-            caminho_final = job.output.get("audio_path") if job.output else None
-            tabela = registrar_no_historico(
-                meta.get("voz", "Voz"),
-                meta.get("texto", ""),
-                caminho_final
-            )
+            caminho = job.output.get("audio_path") if job.output and isinstance(job.output, dict) else None
             return (
                 _detalhes_job(job, "✅ Síntese concluída com sucesso!", "toast-success"),
-                caminho_final,
-                tabela,
-                gr.Timer(active=False)
+                caminho,
+                gr.Timer(active=False),
+                tabela
             )
 
         if job.status == "failed":
             return (
                 _detalhes_job(job, "❌ A síntese falhou. Consulte a mensagem de erro abaixo.", "toast-error"),
                 None,
-                atualizar_tabela_historico(),
-                gr.Timer(active=False)
+                gr.Timer(active=False),
+                tabela
             )
 
         if job.status == "cancelled":
             return (
                 _detalhes_job(job, "🛑 Tarefa cancelada.", "toast-error"),
                 None,
-                atualizar_tabela_historico(),
-                gr.Timer(active=False)
+                gr.Timer(active=False),
+                tabela
             )
 
-        return _detalhes_job(job, f"Status atual: {job.status}"), None, atualizar_tabela_historico(), gr.Timer(active=True)
-=======
-        tabela = atualizar_tabela_jobs()
-        if job.status == "succeeded":
-            caminho = job.output.get("audio_path") if job.output else None
-            return caminho, gr.Timer(active=False), tabela
-        elif job.status in ["failed", "cancelled"]:
-            return gr.update(), gr.Timer(active=False), tabela
+        return (
+            _detalhes_job(job, f"Status atual: {_html_seguro(job.status)}"),
+            gr.update(),
+            gr.Timer(active=True),
+            tabela
+        )
 
-        return gr.update(), gr.Timer(active=True), tabela
->>>>>>> b83f554 (ok)
 
     status_timer.tick(
         fn=checar_status_ativo,
         inputs=[active_job_id],
-        outputs=[audio_output, status_timer, tabela_jobs]
+        outputs=[toast_status, audio_output, status_timer, tabela_jobs]
     )
 
     # Selecionar linha na tabela de Jobs para ouvir ou gerenciar
