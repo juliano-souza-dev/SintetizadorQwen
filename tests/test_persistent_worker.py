@@ -6,7 +6,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
-from persistent_worker import PersistentWorker
+from persistent_worker import PermanentJobError, PersistentWorker
 from sqlite_job_repository import SqliteJobRepository
 
 UTC = timezone.utc
@@ -57,6 +57,29 @@ class PersistentWorkerTests(unittest.TestCase):
         self.assertIn("JOB_HANDLER_BEGIN", log_text)
         self.assertIn("JOB_FAILED", log_text)
         self.assertNotIn("private text", log_text)
+
+    def test_permanent_handler_error_does_not_retry(self) -> None:
+        job = self.repository.enqueue(
+            kind="tts_generate", input={}, max_attempts=3
+        )
+
+        def timeout(*_args):
+            raise PermanentJobError("inference inactivity timeout")
+
+        worker = PersistentWorker(
+            self.repository,
+            "test-worker",
+            {"tts_generate": timeout},
+            logger=logging.getLogger("test.persistent_worker.permanent"),
+            job_log_dir=self.log_dir,
+        )
+        self.assertTrue(worker.run_once())
+        failed = self.repository.get(str(job.id))
+        self.assertEqual(failed.status, "failed")
+        self.assertIn("inference inactivity timeout", failed.error_message)
+        self.assertIsNone(
+            self.repository.claim_next(worker_id="test-worker", now=self.now())
+        )
 
     def test_success_is_persisted_only_after_handler_returns(self) -> None:
         job = self.repository.enqueue(kind="tts_generate", input={})
