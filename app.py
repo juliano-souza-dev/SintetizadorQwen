@@ -17,6 +17,7 @@ import traceback
 from datetime import datetime
 
 from tts_service import TTSService, registrar_log
+from job_queue import JobQueue
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -31,6 +32,45 @@ HISTORY_FILE = DATA_DIR / "history.json"
 CAMINHO_MODELO = r"C:\Users\jsouz\Projects\nova-generator\models\qwen3-tts\Qwen3-TTS-12Hz-1.7B-Base"
 
 tts_engine = TTSService(CAMINHO_MODELO)
+
+def processar_job_sintese(payload: dict) -> str:
+    """Executa a síntese usando a instância única do Qwen3-TTS."""
+    nome_voz = payload["nome_voz"]
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    arquivo_saida = str(OUTPUTS_DIR / f"audio_{timestamp}.wav")
+
+    if payload["usar_chunking"] and "[" in payload["texto"] and "]" in payload["texto"]:
+        chunks = parse_texto_para_chunks(payload["texto"])
+        tts_engine.synthesize_chunks(
+            ref_audio_path=payload["audio_path"],
+            ref_text=payload["transcricao"],
+            chunks=chunks,
+            output_path=arquivo_saida,
+            temperature=payload["temperatura"]
+        )
+    else:
+        texto_limpo = payload["texto"].replace("[", "").replace("]", "")
+        tts_engine.synthesize(
+            ref_audio_path=payload["audio_path"],
+            ref_text=payload["transcricao"],
+            text_to_speak=texto_limpo,
+            output_path=arquivo_saida,
+            temperature=payload["temperatura"]
+        )
+
+    historico = carregar_historico()
+    historico.insert(0, {
+        "data": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+        "voz": nome_voz,
+        "texto": payload["texto"],
+        "arquivo": arquivo_saida
+    })
+    salvar_json(HISTORY_FILE, historico)
+    return arquivo_saida
+
+
+# Um único Worker protege a instância do modelo contra chamadas concorrentes.
+fila_jobs = JobQueue(processar_job_sintese, max_history=100)
 
 def carregar_json(arquivo, padrao):
     if os.path.exists(arquivo):
@@ -240,7 +280,15 @@ with gr.Blocks(title="Qwen3-TTS · Síntese de Voz", css=CUSTOM_CSS) as demo:
                     with gr.Group(elem_classes="card-panel"):
                         gr.Markdown("### Resultado da Locução")
                         audio_output = gr.Audio(label="", interactive=False)
-                    
+
+                    gr.Markdown("### Fila de Processamento")
+                    tabela_jobs = gr.Dataframe(
+                        headers=["Job", "Estado", "Criado em", "Iniciado em", "Finalizado em", "Erro"],
+                        value=[],
+                        interactive=False,
+                        wrap=True
+                    )
+
                     with gr.Accordion("Detalhes da Voz de Referência", open=False):
                         preview_audio_ref = gr.Audio(label="Áudio de Origem", interactive=False)
                         preview_texto_ref = gr.Textbox(label="Transcrição da Referência", interactive=False, lines=2)
@@ -289,55 +337,96 @@ with gr.Blocks(title="Qwen3-TTS · Síntese de Voz", css=CUSTOM_CSS) as demo:
 
     dropdown_voz.change(fn=sync_dados_voz, inputs=dropdown_voz, outputs=[preview_audio_ref, preview_texto_ref])
 
+    current_job_id = gr.State(value=None)
+
+    def atualizar_tabela_jobs():
+        linhas = []
+        for job in fila_jobs.list_jobs():
+            linhas.append([
+                job["id"],
+                job["status"],
+                job["created_at"],
+                job["started_at"] or "",
+                job["finished_at"] or "",
+                job["error"] or ""
+            ])
+        return linhas
+
     def sintetizar_audio_controller(nome_voz, texto, usar_chunking, temperatura):
         if not nome_voz:
-            return "<div class='toast-banner toast-error'>Selecione uma voz da biblioteca.</div>", None, atualizar_tabela_historico()
+            return "<div class='toast-banner toast-error'>Selecione uma voz da biblioteca.</div>", None, atualizar_tabela_jobs()
         if not texto or not texto.strip():
-            return "<div class='toast-banner toast-error'>O texto não pode estar vazio.</div>", None, atualizar_tabela_historico()
+            return "<div class='toast-banner toast-error'>O texto não pode estar vazio.</div>", None, atualizar_tabela_jobs()
 
         bib = carregar_biblioteca()
-        dados_voz = bib[nome_voz]
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        arquivo_saida = str(OUTPUTS_DIR / f"audio_{timestamp}.wav")
+        dados_voz = bib.get(nome_voz)
+        if not dados_voz:
+            return "<div class='toast-banner toast-error'>A voz selecionada não existe mais na biblioteca.</div>", None, atualizar_tabela_jobs()
+        if not os.path.isfile(dados_voz.get("audio_path", "")):
+            return "<div class='toast-banner toast-error'>O áudio de referência dessa voz não foi encontrado.</div>", None, atualizar_tabela_jobs()
 
         try:
-            if usar_chunking and "[" in texto and "]" in texto:
-                chunks = parse_texto_para_chunks(texto)
-                tts_engine.synthesize_chunks(
-                    ref_audio_path=dados_voz["audio_path"],
-                    ref_text=dados_voz["transcript"],
-                    chunks=chunks,
-                    output_path=arquivo_saida,
-                    temperature=temperatura
-                )
-            else:
-                texto_limpo = texto.replace("[", "").replace("]", "")
-                tts_engine.synthesize(
-                    ref_audio_path=dados_voz["audio_path"],
-                    ref_text=dados_voz["transcript"],
-                    text_to_speak=texto_limpo,
-                    output_path=arquivo_saida,
-                    temperature=temperatura
-                )
-
-            historico = carregar_historico()
-            historico.insert(0, {
-                "data": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
-                "voz": nome_voz,
+            job_id = fila_jobs.submit({
+                "nome_voz": nome_voz,
+                "audio_path": dados_voz["audio_path"],
+                "transcricao": dados_voz["transcript"],
                 "texto": texto,
-                "arquivo": arquivo_saida
+                "usar_chunking": bool(usar_chunking),
+                "temperatura": float(temperatura)
             })
-            salvar_json(HISTORY_FILE, historico)
-
-            return "<div class='toast-banner toast-success'>✅ Áudio gerado com sucesso!</div>", arquivo_saida, atualizar_tabela_historico()
-        except Exception as e:
-            registrar_log(f"[ERRO SÍNTESE]: {traceback.format_exc()}")
-            return f"<div class='toast-banner toast-error'>❌ Falha: {str(e)}</div>", None, atualizar_tabela_historico()
+            registrar_log(f"[JOB {job_id}] Solicitação adicionada à fila.")
+            return (
+                f"<div class='toast-banner toast-success'>⏳ Solicitação recebida. Job {job_id} aguardando processamento.</div>",
+                job_id,
+                atualizar_tabela_jobs()
+            )
+        except Exception:
+            registrar_log(f"[ERRO FILA]: {traceback.format_exc()}")
+            return "<div class='toast-banner toast-error'>Não foi possível adicionar à fila. Consulte o log.</div>", None, atualizar_tabela_jobs()
 
     btn_sintetizar.click(
         fn=sintetizar_audio_controller,
         inputs=[dropdown_voz, input_texto_narrador, chk_chunking, slider_temp],
-        outputs=[toast_status, audio_output, tabela_historico]
+        outputs=[toast_status, current_job_id, tabela_jobs]
+    )
+
+    def consultar_job(job_id):
+        if not job_id:
+            return gr.update(), gr.update(), atualizar_tabela_jobs(), gr.update()
+
+        job = fila_jobs.get(job_id)
+        if not job:
+            return (
+                "<div class='toast-banner toast-error'>O Job não está mais disponível no histórico da fila.</div>",
+                gr.update(),
+                atualizar_tabela_jobs(),
+                atualizar_tabela_historico()
+            )
+
+        if job["status"] == "queued":
+            mensagem = f"<div class='toast-banner toast-success'>⏳ Job {job_id} aguardando na fila.</div>"
+            audio = gr.update()
+            historico = gr.update()
+        elif job["status"] == "running":
+            mensagem = f"<div class='toast-banner toast-success'>⚙️ Job {job_id} em processamento. Aguarde a conclusão.</div>"
+            audio = gr.update()
+            historico = gr.update()
+        elif job["status"] == "completed":
+            mensagem = f"<div class='toast-banner toast-success'>✅ Job {job_id} concluído com sucesso!</div>"
+            audio = job["result"]
+            historico = atualizar_tabela_historico()
+        else:
+            mensagem = f"<div class='toast-banner toast-error'>❌ Job {job_id} falhou: {job['error'] or 'Erro não informado.'}</div>"
+            audio = gr.update()
+            historico = gr.update()
+
+        return mensagem, audio, atualizar_tabela_jobs(), historico
+
+    timer_jobs = gr.Timer(2.0, active=True)
+    timer_jobs.tick(
+        fn=consultar_job,
+        inputs=[current_job_id],
+        outputs=[toast_status, audio_output, tabela_jobs, tabela_historico]
     )
 
     def salvar_nova_voz_action(nome, audio, transcricao):
