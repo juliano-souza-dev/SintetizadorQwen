@@ -290,7 +290,8 @@ class SqliteJobRepository:
                     error_message = CASE WHEN attempt < max_attempts THEN 'servidor reiniciado - retomando job' ELSE 'excedeu tentativas' END,
                     worker_id = NULL,
                     updated_at = ?
-                WHERE status = 'running' AND (lease_heartbeat_at < ? OR worker_id IS NOT NULL)
+                WHERE status = 'running'
+                  AND (lease_heartbeat_at IS NULL OR lease_heartbeat_at < ?)
                 """,
                 (now_str, before_str),
             )
