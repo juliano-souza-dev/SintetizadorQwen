@@ -43,14 +43,16 @@ if not exist "data" mkdir "data"
 if not exist "data\outputs" mkdir "data\outputs"
 if not exist "data\voices" mkdir "data\voices"
 
-:: [4/5] Iniciar o Worker TTS (Backend / Motor de IA) em janela dedicada
-echo [4/5] Subindo o Worker TTS em processo isolado...
+:: [4/5] Iniciar supervisor do Worker TTS em janela dedicada.
+:: Se o worker cair por erro Python, crash nativo ou encerramento inesperado,
+:: o supervisor inicia uma nova instancia automaticamente.
+echo [4/5] Subindo o supervisor do Worker TTS...
 set HF_HUB_DISABLE_XET=1
 set KMP_DUPLICATE_LIB_OK=TRUE
 
-start "Qwen3-TTS Worker (Backend)" cmd /k "chcp 65001 >nul && cd /d "%~dp0" && echo === WORKER TTS ATIVO === && python\python.exe -u worker_tts.py"
+start "Qwen3-TTS Worker Supervisor" cmd /k "chcp 65001 >nul && cd /d "%~dp0" && echo === SUPERVISOR TTS ATIVO === && python\python.exe -u worker_supervisor.py"
 
-:: Pequena pausa para garantir a criacao do banco SQLite pelo worker antes do front
+:: Pequena pausa para o worker iniciar o banco SQLite antes do front
 timeout /t 3 /nobreak >nul
 
 :: [5/5] Iniciar a Interface Gradio (Frontend)
@@ -60,9 +62,9 @@ echo.
 
 python\python.exe -u app.py
 
-:: Ao fechar a interface, encerra tambem o worker para nao deixar lixo na RAM
+:: Ao fechar a interface, encerra o supervisor e o worker vinculado.
 echo.
 echo Encerrando processos vinculados...
-taskkill /FI "WINDOWTITLE eq Qwen3-TTS Worker (Backend)*" /T /F >nul 2>&1
+taskkill /FI "WINDOWTITLE eq Qwen3-TTS Worker Supervisor*" /T /F >nul 2>&1
 echo Concluido.
 pause
