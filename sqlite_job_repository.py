@@ -269,6 +269,7 @@ class SqliteJobRepository:
                 """
                 UPDATE jobs SET
                     cancellation_requested = 1,
+                    cancel_requested_at = COALESCE(cancel_requested_at, ?),
                     status = CASE
                         WHEN status IN ('queued', 'retryable') THEN 'cancelled'
                         ELSE status
