@@ -77,6 +77,7 @@ class PersistentWorker:
         logger: logging.Logger | None = None,
         allowed_kinds: tuple[str, ...] | None = None,
         excluded_kinds: tuple[str, ...] = (),
+        job_log_dir: str | Path | None = None,
     ) -> None:
         self._repository = repository
         self._worker_id = worker_id
@@ -85,6 +86,7 @@ class PersistentWorker:
         self._excluded_kinds = excluded_kinds
         self._heartbeat_timeout = heartbeat_timeout
         self._logger = logger or logging.getLogger("worker_tts")
+        self._job_log_dir = Path(job_log_dir) if job_log_dir else Path(__file__).resolve().parent / "logs" / "jobs"
 
     def run_once(self) -> bool:
         now = _utcnow()
@@ -114,7 +116,7 @@ class PersistentWorker:
         job_id = str(job.id)
         execution = JobExecution(self._repository, job, self._worker_id)
         started = time.monotonic()
-        log_path = Path(__file__).resolve().parent / "logs" / "jobs" / f"{job_id}.log"
+        log_path = self._job_log_dir / f"{job_id}.log"
         job_handler: logging.Handler | None = None
         root_logger = logging.getLogger()
 
