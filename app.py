@@ -459,6 +459,44 @@ with gr.Blocks(title="Qwen3-TTS · Síntese de Voz") as demo:
     )
 
     # 2. Polling de Status do Job (Timer a cada 2s)
+    def _html_seguro(valor):
+        import html
+        return html.escape(str(valor or ""))
+
+    def _detalhes_job(job, mensagem, classe="toast-info"):
+        entrada = job.input or {}
+        texto_job = entrada.get("text") or " ".join(
+            chunk.get("text", "") for chunk in entrada.get("chunks", [])
+        )
+        modo = "Chunking por idioma" if entrada.get("chunks") else "Síntese direta"
+        criado = job.created_at.astimezone().strftime("%d/%m/%Y %H:%M:%S") if job.created_at else "Não informado"
+        atualizado = job.updated_at.astimezone().strftime("%d/%m/%Y %H:%M:%S") if job.updated_at else "Não informado"
+        worker = job.worker_id or ("Aguardando worker" if job.status == "queued" else "Não identificado")
+        erro = (
+            f"<p style='color:#F87171;margin:8px 0 0'><b>Erro:</b> {_html_seguro(job.error_message)}</p>"
+            if job.error_message else ""
+        )
+        return f"""
+        <div class='toast-banner {classe}' style='margin-bottom:10px'>{mensagem}</div>
+        <div style='background:#171A21;border:1px solid #262B36;border-radius:10px;padding:14px;color:#E5E7EB'>
+          <div style='display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap'>
+            <b>Detalhes da execução</b><span style='color:#9CA3AF'>ID: {_html_seguro(str(job.id))}</span>
+          </div>
+          <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:12px'>
+            <div><small style='color:#9CA3AF'>Status</small><div><b>{_html_seguro(job.status.upper())}</b></div></div>
+            <div><small style='color:#9CA3AF'>Tentativa</small><div><b>{job.attempt}/{job.max_attempts}</b></div></div>
+            <div><small style='color:#9CA3AF'>Worker</small><div><b>{_html_seguro(worker)}</b></div></div>
+            <div><small style='color:#9CA3AF'>Modo</small><div><b>{_html_seguro(modo)}</b></div></div>
+            <div><small style='color:#9CA3AF'>Criado em</small><div><b>{_html_seguro(criado)}</b></div></div>
+            <div><small style='color:#9CA3AF'>Última atualização</small><div><b>{_html_seguro(atualizado)}</b></div></div>
+          </div>
+          <div style='margin-top:12px'><small style='color:#9CA3AF'>Texto enviado para síntese</small>
+            <div style='white-space:pre-wrap;max-height:110px;overflow:auto;margin-top:4px'>{_html_seguro(texto_job)}</div>
+          </div>
+          {erro}
+        </div>
+        """
+
     def checar_status_job(job_id_str: str | None, meta: dict):
         if not job_id_str:
             return gr.update(), None, atualizar_tabela_historico(), gr.Timer(active=False)
@@ -469,21 +507,21 @@ with gr.Blocks(title="Qwen3-TTS · Síntese de Voz") as demo:
 
         if job.status == "queued":
             return (
-                f"<div class='toast-banner toast-info'>⏳ Tarefa {job_id_str[:8]} na fila. Aguardando worker...</div>",
+                _detalhes_job(job, "⏳ Na fila. O worker ainda não assumiu esta tarefa."),
                 None,
                 gr.update(),
                 gr.Timer(active=True)
             )
 
-        elif job.status == "running":
+        if job.status == "running":
             return (
-                f"<div class='toast-banner toast-info'>⚙️ Sintetizando na CPU (Tentativa {job.attempt})...</div>",
+                _detalhes_job(job, "⚙️ WORKER ATIVO: tarefa em processamento. A última atualização confirma a atividade do worker."),
                 None,
                 gr.update(),
                 gr.Timer(active=True)
             )
 
-        elif job.status == "succeeded":
+        if job.status == "succeeded":
             caminho_final = job.output.get("audio_path") if job.output else None
             tabela = registrar_no_historico(
                 meta.get("voz", "Voz"),
@@ -491,30 +529,29 @@ with gr.Blocks(title="Qwen3-TTS · Síntese de Voz") as demo:
                 caminho_final
             )
             return (
-                "<div class='toast-banner toast-success'>✅ Síntese concluída com sucesso!</div>",
+                _detalhes_job(job, "✅ Síntese concluída com sucesso!", "toast-success"),
                 caminho_final,
                 tabela,
                 gr.Timer(active=False)
             )
 
-        elif job.status == "failed":
-            erro = job.error_message or "Erro durante o processamento do modelo."
+        if job.status == "failed":
             return (
-                f"<div class='toast-banner toast-error'>❌ Falha na geração: {erro}</div>",
+                _detalhes_job(job, "❌ A síntese falhou. Consulte a mensagem de erro abaixo.", "toast-error"),
                 None,
                 atualizar_tabela_historico(),
                 gr.Timer(active=False)
             )
 
-        elif job.status == "cancelled":
+        if job.status == "cancelled":
             return (
-                "<div class='toast-banner toast-error'>🛑 Tarefa cancelada cooperativamente.</div>",
+                _detalhes_job(job, "🛑 Tarefa cancelada.", "toast-error"),
                 None,
                 atualizar_tabela_historico(),
                 gr.Timer(active=False)
             )
 
-        return gr.update(), None, atualizar_tabela_historico(), gr.Timer(active=False)
+        return _detalhes_job(job, f"Status atual: {job.status}"), None, atualizar_tabela_historico(), gr.Timer(active=True)
 
     status_timer.tick(
         fn=checar_status_job,
