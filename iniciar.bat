@@ -1,33 +1,68 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
+title Gerenciador - Sintetizador Qwen3-TTS
 
 echo ===================================================
-echo   Inicializador - Sintetizador Qwen3
+echo   Inicializador Unificado - Qwen3-TTS (Back + Front)
 echo ===================================================
 
-:: [1/3] Matar processos python travados na memoria RAM e limpar cache
-echo [1/3] Limpando memoria de processos anteriores e cache...
-taskkill /F /IM python.exe /T >nul 2>&1
-if exist "__pycache__" rd /s /q "__pycache__"
-
-:: [2/3] Verificar Python
+:: [1/5] Verificar executavel do Python portatil
+echo [1/5] Verificando ambiente Python local...
 if not exist "python\python.exe" (
-    echo [ERRO] python\python.exe nao encontrado!
+    echo [ERRO CRITICO] python\python.exe nao foi encontrado na pasta do projeto!
     pause
     exit /b 1
 )
 
-:: [3/3] Iniciar aplicacao mostrando na tela em tempo real
-echo [2/3] Iniciando a aplicacao...
-echo.
-python\python.exe -u -X faulthandler app.py
+:: [2/5] Checagem e instalacao automatica de dependencias
+echo [2/5] Verificando dependencias essenciais...
+set "FALTANDO="
+if not exist "python\Lib\site-packages\torch" set "FALTANDO=1"
+if not exist "python\Lib\site-packages\gradio" set "FALTANDO=1"
+if not exist "python\Lib\site-packages\qwen_tts" set "FALTANDO=1"
+if not exist "python\Lib\site-packages\soundfile.py" if not exist "python\Lib\site-packages\soundfile" set "FALTANDO=1"
+if not exist "python\Lib\site-packages\librosa" set "FALTANDO=1"
 
-if errorlevel 1 (
-    echo.
-    echo ===================================================
-    echo [ALERTA] O processo caiu com codigo: %errorlevel%
-    echo Verifique o arquivo "sistema.log" para ver o historico.
-    echo ===================================================
+if defined FALTANDO (
+    echo [AVISO] Pacotes ausentes detectados. Instalando dependencias necessarias...
+    python\python.exe -m pip install --disable-pip-version-check --no-input torch gradio qwen-tts soundfile librosa numpy huggingface_hub
+    if errorlevel 1 (
+        echo [ERRO CRITICO] Falha ao instalar as dependencias. Verifique a conexao com a internet.
+        pause
+        exit /b 1
+    )
+    echo       Dependencias instaladas com sucesso!
+) else (
+    echo       Todas as dependencias estao prontas.
 )
+
+:: [3/5] Criar pastas de dados caso nao existam
+echo [3/5] Validando diretorios estruturais...
+if not exist "data" mkdir "data"
+if not exist "data\outputs" mkdir "data\outputs"
+if not exist "data\voices" mkdir "data\voices"
+
+:: [4/5] Iniciar o Worker TTS (Backend / Motor de IA) em janela dedicada
+echo [4/5] Subindo o Worker TTS em processo isolado...
+set HF_HUB_DISABLE_XET=1
+set KMP_DUPLICATE_LIB_OK=TRUE
+
+start "Qwen3-TTS Worker (Backend)" cmd /k "chcp 65001 >nul && cd /d "%~dp0" && echo === WORKER TTS ATIVO === && python\python.exe -u worker_tts.py"
+
+:: Pequena pausa para garantir a criacao do banco SQLite pelo worker antes do front
+timeout /t 3 /nobreak >nul
+
+:: [5/5] Iniciar a Interface Gradio (Frontend)
+echo [5/5] Subindo a interface Gradio em http://127.0.0.1:7860 ...
+echo Pressione Ctrl+C para encerrar a interface.
+echo.
+
+python\python.exe -u app.py
+
+:: Ao fechar a interface, encerra tambem o worker para nao deixar lixo na RAM
+echo.
+echo Encerrando processos vinculados...
+taskkill /FI "WINDOWTITLE eq Qwen3-TTS Worker (Backend)*" /T /F >nul 2>&1
+echo Concluido.
 pause
