@@ -381,6 +381,33 @@ class SqliteJobRepository:
             )
             return result.rowcount == 1
 
+    def fail_permanently(
+        self,
+        *,
+        job_id: str,
+        worker_id: str,
+        error_message: str,
+        now: datetime,
+    ) -> bool:
+        now_str = now.isoformat()
+        with self._connection() as conn:
+            result = conn.execute(
+                """
+                UPDATE jobs SET
+                    status = CASE
+                        WHEN cancellation_requested = 1 THEN 'cancelled'
+                        ELSE 'failed'
+                    END,
+                    error_message = ?,
+                    finished_at = ?,
+                    lease_heartbeat_at = ?,
+                    updated_at = ?
+                WHERE id = ? AND worker_id = ? AND status = 'running'
+                """,
+                (error_message, now_str, now_str, now_str, job_id, worker_id),
+            )
+            return result.rowcount == 1
+
     def cancel(self, *, job_id: str, worker_id: str, now: datetime) -> bool:
         now_str = now.isoformat()
         with self._connection() as conn:

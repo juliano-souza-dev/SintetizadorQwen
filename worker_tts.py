@@ -21,6 +21,8 @@ if str(BASE_DIR) not in sys.path:
 from persistent_worker import PersistentWorker
 from sqlite_job_repository import SqliteJobRepository
 from tts_job_handler import make_tts_handler
+from inference_process import InferenceProcessClient
+import atexit
 
 # 3. Definição do caminho do modelo de IA
 CAMINHO_MODELO = os.environ.get(
@@ -76,22 +78,18 @@ def main() -> None:
     # Instancia o repositório durável partilhado em SQLite
     repository = SqliteJobRepository(db_path=str(BASE_DIR / "data" / "jobs.db"))
 
-    # O worker e a fila sobem ANTES do carregamento do modelo. O Qwen é
-    # importado e inicializado sob demanda, já dentro de um job reservado.
-    # Assim, falhas de import/modelo viram falhas rastreáveis do job, não jobs eternamente queued.
-    engine_cache: dict[str, object] = {}
+    # A inferência Qwen roda em processo separado. O processo mantém o
+    # modelo carregado entre jobs e pode ser encerrado sem matar a fila.
+    inference_client = InferenceProcessClient(
+        model_path=CAMINHO_MODELO,
+        dict_file=str(BASE_DIR / "phoneme_dict.json"),
+        timeout_seconds=float(os.environ.get("QWEN_INFERENCE_TIMEOUT_SECONDS", "900")),
+        log_path=str(BASE_DIR / "worker_inference.log"),
+    )
+    atexit.register(inference_client.close)
 
     def get_engine():
-        if "engine" not in engine_cache:
-            logger.info("TTS_ENGINE_INITIALIZATION_BEGIN model_path=%s", CAMINHO_MODELO)
-            from tts_service import TTSService
-
-            engine_cache["engine"] = TTSService(
-                model_path=CAMINHO_MODELO,
-                dict_file=str(BASE_DIR / "phoneme_dict.json"),
-            )
-            logger.info("TTS_ENGINE_INITIALIZATION_COMPLETE")
-        return engine_cache["engine"]
+        return inference_client
 
     # Identificador exclusivo deste processo de execução
     worker_id = f"worker-tts-{socket.gethostname()}-{os.getpid()}"
