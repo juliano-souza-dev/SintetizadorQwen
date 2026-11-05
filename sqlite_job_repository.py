@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
+from collections.abc import Iterator
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,8 +45,17 @@ class SqliteJobRepository:
         conn.execute("PRAGMA journal_mode = WAL")
         return conn
 
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        conn = self._get_conn()
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
+
     def _init_db(self) -> None:
-        with self._get_conn() as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS jobs (
@@ -132,7 +143,7 @@ class SqliteJobRepository:
 
         job_id = str(uuid.uuid4())
         now = _utcnow().isoformat()
-        with self._get_conn() as conn:
+        with self._connection() as conn:
             # BEGIN IMMEDIATE serializa produtores que usam a mesma chave idempotente.
             conn.execute("BEGIN IMMEDIATE")
             if idempotency_key:
@@ -166,7 +177,7 @@ class SqliteJobRepository:
         excluded_kinds: tuple[str, ...] = (),
     ) -> Job | None:
         now_str = now.isoformat()
-        with self._get_conn() as conn:
+        with self._connection() as conn:
             # Uma única transação de escrita impede dois workers de reservarem o mesmo job.
             conn.execute("BEGIN IMMEDIATE")
             query = "SELECT id FROM jobs WHERE status IN ('queued', 'retryable')"
@@ -213,7 +224,7 @@ class SqliteJobRepository:
 
     def heartbeat(self, *, job_id: str, worker_id: str, now: datetime) -> bool:
         now_str = now.isoformat()
-        with self._get_conn() as conn:
+        with self._connection() as conn:
             result = conn.execute(
                 """
                 UPDATE jobs SET lease_heartbeat_at = ?, updated_at = ?
@@ -227,7 +238,7 @@ class SqliteJobRepository:
         self, *, job_id: str, worker_id: str, progress_data: dict[str, Any]
     ) -> bool:
         now_str = _utcnow().isoformat()
-        with self._get_conn() as conn:
+        with self._connection() as conn:
             result = conn.execute(
                 """
                 UPDATE jobs SET output = ?, progress = ?, updated_at = ?
@@ -238,7 +249,7 @@ class SqliteJobRepository:
             return result.rowcount == 1
 
     def cancellation_requested(self, *, job_id: str, worker_id: str) -> bool:
-        with self._get_conn() as conn:
+        with self._connection() as conn:
             row = conn.execute(
                 """
                 SELECT cancellation_requested FROM jobs
@@ -250,7 +261,7 @@ class SqliteJobRepository:
 
     def request_cancellation(self, *, job_id: str, now: datetime) -> Job | None:
         now_str = now.isoformat()
-        with self._get_conn() as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 UPDATE jobs SET
@@ -274,7 +285,7 @@ class SqliteJobRepository:
         self, *, job_id: str, worker_id: str, output: dict[str, Any], now: datetime
     ) -> bool:
         now_str = now.isoformat()
-        with self._get_conn() as conn:
+        with self._connection() as conn:
             result = conn.execute(
                 """
                 UPDATE jobs SET
@@ -300,7 +311,7 @@ class SqliteJobRepository:
         now: datetime,
     ) -> bool:
         now_str = now.isoformat()
-        with self._get_conn() as conn:
+        with self._connection() as conn:
             result = conn.execute(
                 """
                 UPDATE jobs SET
@@ -321,7 +332,7 @@ class SqliteJobRepository:
 
     def cancel(self, *, job_id: str, worker_id: str, now: datetime) -> bool:
         now_str = now.isoformat()
-        with self._get_conn() as conn:
+        with self._connection() as conn:
             result = conn.execute(
                 """
                 UPDATE jobs SET
@@ -337,7 +348,7 @@ class SqliteJobRepository:
 
     def recover_abandoned(self, *, before: datetime, now: datetime) -> int:
         before_str, now_str = before.isoformat(), now.isoformat()
-        with self._get_conn() as conn:
+        with self._connection() as conn:
             result = conn.execute(
                 """
                 UPDATE jobs SET
@@ -366,7 +377,7 @@ class SqliteJobRepository:
             normalized_id = str(uuid.UUID(str(job_id)))
         except (ValueError, TypeError, AttributeError):
             return None
-        with self._get_conn() as conn:
+        with self._connection() as conn:
             row = conn.execute("SELECT * FROM jobs WHERE id = ?", (normalized_id,)).fetchone()
             return self._row_to_job(row) if row else None
 
@@ -375,7 +386,7 @@ class SqliteJobRepository:
     ) -> tuple[list[Job], int]:
         if offset < 0 or limit < 1:
             raise ValueError("offset deve ser >= 0 e limit deve ser >= 1.")
-        with self._get_conn() as conn:
+        with self._connection() as conn:
             if status:
                 total = conn.execute(
                     "SELECT COUNT(*) FROM jobs WHERE status = ?", (status,)
@@ -400,7 +411,7 @@ class SqliteJobRepository:
 
     def retry(self, *, job_id: str, now: datetime) -> Job | None:
         now_str = now.isoformat()
-        with self._get_conn() as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 UPDATE jobs SET
