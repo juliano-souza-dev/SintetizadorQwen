@@ -70,6 +70,7 @@ class SqliteJobRepository:
                     worker_id TEXT,
                     idempotency_key TEXT,
                     cancellation_requested INTEGER NOT NULL DEFAULT 0,
+                    cancel_requested_at TEXT,
                     lease_heartbeat_at TEXT,
                     started_at TEXT,
                     finished_at TEXT,
@@ -87,6 +88,7 @@ class SqliteJobRepository:
             migrations = {
                 "idempotency_key": "TEXT",
                 "cancellation_requested": "INTEGER NOT NULL DEFAULT 0",
+                "cancel_requested_at": "TEXT",
                 "lease_heartbeat_at": "TEXT",
                 "started_at": "TEXT",
                 "finished_at": "TEXT",
@@ -122,8 +124,8 @@ class SqliteJobRepository:
             finished_at=_iso_to_dt(row["finished_at"]) if "finished_at" in keys else None,
             heartbeat_at=_iso_to_dt(row["lease_heartbeat_at"]) if "lease_heartbeat_at" in keys else None,
             cancel_requested_at=(
-                _iso_to_dt(row["updated_at"])
-                if "cancellation_requested" in keys and row["cancellation_requested"]
+                _iso_to_dt(row["cancel_requested_at"])
+                if "cancel_requested_at" in keys
                 else None
             ),
         )
@@ -210,6 +212,7 @@ class SqliteJobRepository:
                     started_at = ?,
                     finished_at = NULL,
                     cancellation_requested = 0,
+                    cancel_requested_at = NULL,
                     output = NULL,
                     error_message = NULL,
                     updated_at = ?
@@ -277,7 +280,7 @@ class SqliteJobRepository:
                     updated_at = ?
                 WHERE id = ? AND status IN ('queued', 'retryable', 'running')
                 """,
-                (now_str, now_str, job_id),
+                (now_str, now_str, now_str, job_id),
             )
         return self.get(job_id)
 
@@ -420,6 +423,7 @@ class SqliteJobRepository:
                     worker_id = NULL,
                     lease_heartbeat_at = NULL,
                     cancellation_requested = 0,
+                    cancel_requested_at = NULL,
                     started_at = NULL,
                     finished_at = NULL,
                     output = NULL,
