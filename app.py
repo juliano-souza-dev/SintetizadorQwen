@@ -577,4 +577,7 @@ with gr.Blocks(title="Qwen3-TTS · Síntese de Voz") as demo:
     )
 
 if __name__ == "__main__":
-    # No modo DEV, o supervisor abre o navegador uma única vez. Assim, reinícios\n    # do servidor não abrem novas abas nem solicitam reload explícito da página.\n    modo_dev = os.environ.get("QWEN_DEV_MODE") == "1"\n    demo.launch(inbrowser=not modo_dev, server_name="127.0.0.1", share=False, css=CUSTOM_CSS)
+    # No modo DEV, o supervisor abre o navegador uma única vez. Assim, reinícios
+    # do servidor não abrem novas abas nem solicitam reload explícito da página.
+    modo_dev = os.environ.get("QWEN_DEV_MODE") == "1"
+    demo.launch(inbrowser=not modo_dev, server_name="127.0.0.1", share=False, css=CUSTOM_CSS)
