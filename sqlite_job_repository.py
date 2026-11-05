@@ -76,7 +76,8 @@ class SqliteJobRepository:
                     finished_at TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
-                    progress TEXT
+                    progress TEXT,
+                    deletion_requested INTEGER NOT NULL DEFAULT 0
                 )
                 """
             )
@@ -93,6 +94,7 @@ class SqliteJobRepository:
                 "started_at": "TEXT",
                 "finished_at": "TEXT",
                 "progress": "TEXT",
+                "deletion_requested": "INTEGER NOT NULL DEFAULT 0",
             }
             for column, definition in migrations.items():
                 if column not in existing:
@@ -128,6 +130,10 @@ class SqliteJobRepository:
                 if "cancel_requested_at" in keys
                 else None
             ),
+            progress=(json.loads(row["progress"]) if row["progress"] else None)
+            if "progress" in keys else None,
+            deletion_requested=bool(row["deletion_requested"])
+            if "deletion_requested" in keys else False,
         )
 
     def enqueue(
@@ -214,6 +220,8 @@ class SqliteJobRepository:
                     cancellation_requested = 0,
                     cancel_requested_at = NULL,
                     output = NULL,
+                    progress = NULL,
+                    deletion_requested = 0,
                     error_message = NULL,
                     updated_at = ?
                 WHERE id = ? AND status IN ('queued', 'retryable')
@@ -244,10 +252,10 @@ class SqliteJobRepository:
         with self._connection() as conn:
             result = conn.execute(
                 """
-                UPDATE jobs SET output = ?, progress = ?, updated_at = ?
+                UPDATE jobs SET progress = ?, updated_at = ?
                 WHERE id = ? AND worker_id = ? AND status = 'running'
                 """,
-                (_dump(progress_data), _dump(progress_data), now_str, job_id, worker_id),
+                (_dump(progress_data), now_str, job_id, worker_id),
             )
             return result.rowcount == 1
 
@@ -284,6 +292,48 @@ class SqliteJobRepository:
                 (now_str, now_str, now_str, job_id),
             )
         return self.get(job_id)
+
+    def request_deletion(self, *, job_id: str, now: datetime) -> Job | None:
+        """Marca exclusão. Jobs em execução recebem cancelamento cooperativo."""
+        now_str = now.isoformat()
+        with self._connection() as conn:
+            conn.execute(
+                """
+                UPDATE jobs SET
+                    deletion_requested = 1,
+                    cancellation_requested = CASE
+                        WHEN status = 'running' THEN 1
+                        ELSE cancellation_requested
+                    END,
+                    cancel_requested_at = CASE
+                        WHEN status = 'running' THEN COALESCE(cancel_requested_at, ?)
+                        ELSE cancel_requested_at
+                    END,
+                    status = CASE
+                        WHEN status IN ('queued', 'retryable') THEN 'cancelled'
+                        ELSE status
+                    END,
+                    finished_at = CASE
+                        WHEN status IN ('queued', 'retryable') THEN ?
+                        ELSE finished_at
+                    END,
+                    updated_at = ?
+                WHERE id = ? AND status IN (
+                    'queued', 'retryable', 'running', 'succeeded', 'failed', 'cancelled'
+                )
+                """,
+                (now_str, now_str, now_str, job_id),
+            )
+        return self.get(job_id)
+
+    def delete_job(self, *, job_id: str) -> bool:
+        """Remove somente jobs que já não estão sob controle de um worker."""
+        with self._connection() as conn:
+            result = conn.execute(
+                "DELETE FROM jobs WHERE id = ? AND status <> 'running'",
+                (job_id,),
+            )
+            return result.rowcount == 1
 
     def succeed(
         self, *, job_id: str, worker_id: str, output: dict[str, Any], now: datetime
