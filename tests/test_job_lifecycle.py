@@ -171,7 +171,9 @@ class JobLifecycleTests(unittest.TestCase):
     def test_missing_job_is_reported_as_cancellation_to_old_worker(self) -> None:
         job = self.repository.enqueue(kind="tts_generate", input={})
         self.repository.claim_next(worker_id="worker-a", now=self.now())
-        self.assertTrue(self.repository.delete_job(job_id=str(job.id)))
+        # Simulate legacy/out-of-band deletion that bypasses delete_job's guard.
+        with self.repository._connection() as conn:
+            conn.execute("DELETE FROM jobs WHERE id = ?", (str(job.id),))
         self.assertTrue(self.repository.cancellation_requested(
             job_id=str(job.id), worker_id="worker-a"
         ))
