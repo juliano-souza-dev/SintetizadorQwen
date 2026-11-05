@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 from collections.abc import Callable, Generator
 from threading import Event, Thread
 from typing import Any
@@ -8,6 +9,8 @@ from typing import Any
 from jobs import Job
 from persistent_worker import JobExecution
 from tts_service import TTSService
+
+logger = logging.getLogger("tts_job_handler")
 
 
 @contextlib.contextmanager
@@ -22,6 +25,11 @@ def _keep_lease(
             try:
                 execution.heartbeat()
             except Exception:
+                logger.exception(
+                    "Falha ao renovar heartbeat do job %s. "
+                    "A inferência pode continuar, mas o lease pode expirar.",
+                    execution._job.id,
+                )
                 break
 
     worker_thread = Thread(target=_heartbeat_loop, daemon=True)
@@ -39,6 +47,10 @@ def make_tts_handler(
     """Cria o handler registrado para kind='tts_generate'."""
 
     def handle(job: Job, execution: JobExecution) -> dict[str, Any]:
+        logger.info(
+            "HANDLER_START job_id=%s kind=%s tentativa=%s",
+            job.id, job.kind, job.attempt
+        )
         execution.raise_if_cancelled()
         payload = job.input
 
@@ -66,8 +78,21 @@ def make_tts_handler(
                 "É obrigatório informar 'text' ou uma lista de 'chunks'."
             )
 
+        logger.info(
+            "HANDLER_VALIDATED job_id=%s ref_audio=%s output=%s mode=%s "
+            "chunks=%s temperature=%s",
+            job.id, ref_audio_path, output_path,
+            "chunks" if chunks and isinstance(chunks, list) else "direct",
+            len(chunks) if isinstance(chunks, list) else 0,
+            temperature,
+        )
+
         with _keep_lease(execution):
             if chunks and isinstance(chunks, list):
+                logger.info(
+                    "SYNTHESIS_CHUNKS_BEGIN job_id=%s total_chunks=%s",
+                    job.id, len(chunks)
+                )
                 audio_gerado = engine.synthesize_chunks(
                     ref_audio_path=ref_audio_path,
                     ref_text=ref_text,
@@ -77,6 +102,7 @@ def make_tts_handler(
                     checkpoint=execution.raise_if_cancelled,
                 )
             else:
+                logger.info("SYNTHESIS_DIRECT_BEGIN job_id=%s", job.id)
                 audio_gerado = engine.synthesize(
                     ref_audio_path=ref_audio_path,
                     ref_text=ref_text,
@@ -86,6 +112,10 @@ def make_tts_handler(
                     checkpoint=execution.raise_if_cancelled,
                 )
 
+        logger.info(
+            "HANDLER_SUCCESS job_id=%s audio_path=%s exists=%s",
+            job.id, audio_gerado, __import__("os").path.isfile(audio_gerado)
+        )
         return {"audio_path": audio_gerado}
 
     return handle
