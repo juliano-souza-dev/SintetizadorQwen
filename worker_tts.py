@@ -46,7 +46,17 @@ def main() -> None:
 
     # Carrega os pesos do Qwen3 na CPU (ocorre uma única vez na inicialização)
     logger.info(f"A carregar o motor TTS a partir de: {CAMINHO_MODELO}")
-    engine = TTSService(model_path=CAMINHO_MODELO)
+    try:
+        engine = TTSService(
+            model_path=CAMINHO_MODELO,
+            dict_file=str(BASE_DIR / "phoneme_dict.json"),
+        )
+    except Exception:
+        logger.exception(
+            "FALHA FATAL NA INICIALIZAÇÃO DO QWEN3-TTS. "
+            "O worker não irá consumir jobs."
+        )
+        raise
 
     # Identificador exclusivo deste processo de execução
     worker_id = f"worker-tts-{socket.gethostname()}-{os.getpid()}"
