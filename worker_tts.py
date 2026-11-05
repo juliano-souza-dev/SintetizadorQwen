@@ -21,7 +21,6 @@ if str(BASE_DIR) not in sys.path:
 from persistent_worker import PersistentWorker
 from sqlite_job_repository import SqliteJobRepository
 from tts_job_handler import make_tts_handler
-from tts_service import TTSService
 
 # 3. Definição do caminho do modelo de IA
 CAMINHO_MODELO = os.environ.get(
@@ -77,26 +76,29 @@ def main() -> None:
     # Instancia o repositório durável partilhado em SQLite
     repository = SqliteJobRepository(db_path=str(BASE_DIR / "data" / "jobs.db"))
 
-    # Carrega os pesos do Qwen3 na CPU (ocorre uma única vez na inicialização)
-    logger.info(f"A carregar o motor TTS a partir de: {CAMINHO_MODELO}")
-    try:
-        engine = TTSService(
-            model_path=CAMINHO_MODELO,
-            dict_file=str(BASE_DIR / "phoneme_dict.json"),
-        )
-    except Exception:
-        logger.exception(
-            "FALHA FATAL NA INICIALIZAÇÃO DO QWEN3-TTS. "
-            "O worker não irá consumir jobs."
-        )
-        raise
+    # O worker e a fila sobem ANTES do carregamento do modelo. O Qwen é
+    # importado e inicializado sob demanda, já dentro de um job reservado.
+    # Assim, falhas de import/modelo viram falhas rastreáveis do job, não jobs eternamente queued.
+    engine_cache: dict[str, object] = {}
+
+    def get_engine():
+        if "engine" not in engine_cache:
+            logger.info("TTS_ENGINE_INITIALIZATION_BEGIN model_path=%s", CAMINHO_MODELO)
+            from tts_service import TTSService
+
+            engine_cache["engine"] = TTSService(
+                model_path=CAMINHO_MODELO,
+                dict_file=str(BASE_DIR / "phoneme_dict.json"),
+            )
+            logger.info("TTS_ENGINE_INITIALIZATION_COMPLETE")
+        return engine_cache["engine"]
 
     # Identificador exclusivo deste processo de execução
     worker_id = f"worker-tts-{socket.gethostname()}-{os.getpid()}"
     logger.info(f"Worker registado com ID: {worker_id}")
 
     # Regista o handler específico para tarefas de síntese de voz
-    handlers = {"tts_generate": make_tts_handler(engine)}
+    handlers = {"tts_generate": make_tts_handler(get_engine)}
 
     worker = PersistentWorker(
         repository=repository,
