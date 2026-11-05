@@ -336,9 +336,12 @@ class SqliteJobRepository:
         return self.get(job_id)
 
     def delete_job(self, *, job_id: str) -> bool:
-        """Remove o registro imediatamente, mesmo que um worker ainda esteja executando."""
+        """Remove jobs somente depois que o worker deixa o estado running."""
         with self._connection() as conn:
-            result = conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+            result = conn.execute(
+                "DELETE FROM jobs WHERE id = ? AND status != 'running'",
+                (job_id,),
+            )
             return result.rowcount == 1
 
     def succeed(
