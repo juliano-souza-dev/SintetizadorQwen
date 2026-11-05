@@ -112,38 +112,49 @@ def make_tts_handler(
 
         # O heartbeat começa ANTES de carregar torch/Qwen. Uma inicialização longa
         # não deixa o lease expirar e, se falhar, o traceback fica associado ao job.
-        with _keep_lease(execution):
-            logger.info("TTS_ENGINE_LOAD_BEGIN job_id=%s", job.id)
-            engine = engine_factory()
-            logger.info("TTS_ENGINE_READY job_id=%s", job.id)
-            execution.raise_if_cancelled()
-
-            if valid_chunks:
-                logger.info("SYNTHESIS_CHUNKS_BEGIN job_id=%s total_chunks=%s", job.id, len(chunks))
-                audio_path = engine.synthesize_chunks(
-                    ref_audio_path=ref_audio_path,
-                    ref_text=ref_text,
-                    chunks=chunks,
-                    output_path=output_path,
-                    temperature=temperature,
-                    checkpoint=execution.raise_if_cancelled,
-                    progress_callback=execution.report_progress,
-                )
-            else:
-                logger.info("SYNTHESIS_DIRECT_BEGIN job_id=%s", job.id)
-                execution.report_progress({"phase": "synthesizing", "event": "direct_started"})
-                audio_path = engine.synthesize(
-                    ref_audio_path=ref_audio_path,
-                    ref_text=ref_text,
-                    text_to_speak=text,
-                    output_path=output_path,
-                    temperature=temperature,
-                    checkpoint=execution.raise_if_cancelled,
-                )
-                execution.report_progress({"phase": "finalizing", "event": "direct_completed"})
-
-            execution.raise_if_cancelled()
-            execution.heartbeat()
+        try:
+            with _keep_lease(execution):
+                logger.info("TTS_ENGINE_LOAD_BEGIN job_id=%s", job.id)
+                engine = engine_factory()
+                logger.info("TTS_ENGINE_READY job_id=%s", job.id)
+                execution.raise_if_cancelled()
+    
+                if valid_chunks:
+                    logger.info("SYNTHESIS_CHUNKS_BEGIN job_id=%s total_chunks=%s", job.id, len(chunks))
+                    audio_path = engine.synthesize_chunks(
+                        ref_audio_path=ref_audio_path,
+                        ref_text=ref_text,
+                        chunks=chunks,
+                        output_path=output_path,
+                        temperature=temperature,
+                        checkpoint=execution.raise_if_cancelled,
+                        progress_callback=execution.report_progress,
+                    )
+                else:
+                    logger.info("SYNTHESIS_DIRECT_BEGIN job_id=%s", job.id)
+                    execution.report_progress({"phase": "synthesizing", "event": "direct_started"})
+                    audio_path = engine.synthesize(
+                        ref_audio_path=ref_audio_path,
+                        ref_text=ref_text,
+                        text_to_speak=text,
+                        output_path=output_path,
+                        temperature=temperature,
+                        checkpoint=execution.raise_if_cancelled,
+                    )
+                    execution.report_progress({"phase": "finalizing", "event": "direct_completed"})
+    
+                execution.raise_if_cancelled()
+                execution.heartbeat()
+    
+        except BaseException:
+            # A exclusão pode remover o job enquanto uma inferência nativa termina.
+            # Limpa o arquivo parcial/final que ficou sem job associado.
+            try:
+                if isinstance(output_path, str) and os.path.isfile(output_path):
+                    os.remove(output_path)
+            except OSError:
+                logger.exception("ORPHAN_OUTPUT_CLEANUP_FAILED job_id=%s", job.id)
+            raise
 
         if not isinstance(audio_path, str) or not os.path.isfile(audio_path):
             raise FileNotFoundError(
