@@ -114,15 +114,24 @@ class PersistentWorker:
 
         job_id = str(job.id)
         log_dir = Path(__file__).resolve().parent / "logs" / "jobs"
-        log_dir.mkdir(parents=True, exist_ok=True)
         job_log_path = log_dir / f"{job_id}.log"
-        job_handler = logging.FileHandler(job_log_path, encoding="utf-8")
-        job_handler.setLevel(logging.DEBUG)
-        job_handler.setFormatter(logging.Formatter(
-            "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-        ))
+        job_handler = None
         root_logger = logging.getLogger()
-        root_logger.addHandler(job_handler)
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            job_handler = logging.FileHandler(job_log_path, encoding="utf-8")
+            job_handler.setLevel(logging.DEBUG)
+            job_handler.setFormatter(logging.Formatter(
+                "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+            ))
+            root_logger.addHandler(job_handler)
+        except OSError:
+            # Falta de espaço/permissão no disco não deve impedir a execução do job.
+            self._logger.exception(
+                "Não foi possível criar log individual do job %s em %s. "
+                "Os eventos continuarão no log principal.",
+                job_id, job_log_path
+            )
 
         execution = JobExecution(self._repository, job, self._worker_id)
         phase = "job_start"
@@ -216,9 +225,10 @@ class PersistentWorker:
             self._logger.info(
                 "JOB_END id=%s log_file=%s", job_id, job_log_path
             )
-            root_logger.removeHandler(job_handler)
-            job_handler.flush()
-            job_handler.close()
+            if job_handler is not None:
+                root_logger.removeHandler(job_handler)
+                job_handler.flush()
+                job_handler.close()
 
         return True
 
