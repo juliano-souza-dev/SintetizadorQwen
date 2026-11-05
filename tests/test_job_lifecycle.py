@@ -127,6 +127,21 @@ class JobLifecycleTests(unittest.TestCase):
         self.assertTrue(self.repository.delete_job(job_id=str(job.id)))
         self.assertIsNone(self.repository.get(str(job.id)))
 
+    def test_running_job_can_be_deleted_immediately(self) -> None:
+        job = self.repository.enqueue(kind="tts_generate", input={})
+        self.repository.claim_next(worker_id="worker-a", now=self.now())
+        requested = self.repository.request_deletion(job_id=str(job.id), now=self.now())
+        self.assertEqual(requested.status, "running")
+        self.assertTrue(requested.deletion_requested)
+        self.assertTrue(self.repository.cancellation_requested(
+            job_id=str(job.id), worker_id="worker-a"
+        ))
+        self.assertTrue(self.repository.delete_job(job_id=str(job.id)))
+        self.assertIsNone(self.repository.get(str(job.id)))
+        self.assertFalse(self.repository.heartbeat(
+            job_id=str(job.id), worker_id="worker-a", now=self.now()
+        ))
+
     def test_queued_job_deletion_removes_it_without_worker(self) -> None:
         job = self.repository.enqueue(kind="tts_generate", input={})
         requested = self.repository.request_deletion(job_id=str(job.id), now=self.now())
