@@ -26,7 +26,8 @@ def registrar_log(mensagem: str) -> None:
     linha = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {mensagem}"
     print(linha, flush=True)
     try:
-        with open("worker_tts.log", "a", encoding="utf-8") as f:
+        log_path = Path(__file__).resolve().parent / "worker_tts.log"
+        with open(log_path, "a", encoding="utf-8") as f:
             f.write(linha + "\n")
     except Exception:
         pass
