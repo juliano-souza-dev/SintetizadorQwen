@@ -109,6 +109,102 @@ class TTSService:
             return str(temp_ref), True
         return ref_audio_path, False
 
+
+    def _attach_audio_token_monitor(
+        self,
+        progress_callback: Callable[[dict], None] | None,
+        *,
+        scope: str = "direct",
+        current_chunk: int | None = None,
+        total_chunks: int | None = None,
+    ):
+        """Observa os códigos de áudio emitidos pelo Talker sem alterar a geração."""
+        if progress_callback is None:
+            return None
+
+        model_core = getattr(self.model, "model", None)
+        talker = getattr(model_core, "talker", None)
+        if talker is None or not hasattr(talker, "register_forward_hook"):
+            registrar_log("[AVISO] Talker não expõe hook; contador de tokens indisponível.")
+            return None
+
+        state = {
+            "generated_audio_tokens": 0,
+            "generated_audio_frames": 0,
+            "started_at": time.monotonic(),
+            "last_report_at": 0.0,
+        }
+
+        def on_talker_forward(_module, _inputs, output):
+            try:
+                hidden_states = getattr(output, "hidden_states", None)
+                if not isinstance(hidden_states, (tuple, list)) or len(hidden_states) < 2:
+                    return
+                codec_ids = hidden_states[1]
+                if not isinstance(codec_ids, torch.Tensor) or codec_ids.numel() == 0:
+                    return
+
+                # Cada linha representa um passo temporal; as colunas são os
+                # codebooks produzidos para esse frame de áudio.
+                state["generated_audio_tokens"] += int(codec_ids.numel())
+                state["generated_audio_frames"] += (
+                    int(codec_ids.shape[0]) if codec_ids.ndim >= 2 else 1
+                )
+
+                now = time.monotonic()
+                if state["last_report_at"] and now - state["last_report_at"] < 0.8:
+                    return
+                state["last_report_at"] = now
+                elapsed = max(now - state["started_at"], 0.001)
+                payload = {
+                    "phase": "synthesizing",
+                    "event": "audio_token_progress",
+                    "progress_scope": scope,
+                    "generated_audio_tokens": state["generated_audio_tokens"],
+                    "generated_audio_frames": state["generated_audio_frames"],
+                    "tokens_per_second": round(state["generated_audio_tokens"] / elapsed, 2),
+                    "inference_elapsed_seconds": round(elapsed, 2),
+                }
+                if current_chunk is not None:
+                    payload["current_chunk"] = current_chunk
+                if total_chunks is not None:
+                    payload["total_chunks"] = total_chunks
+                try:
+                    progress_callback(payload)
+                except Exception:
+                    # A perda do canal de progresso não deve cancelar a síntese.
+                    registrar_log("[AVISO] Não foi possível enviar atualização de tokens.")
+            except Exception:
+                # Instrumentação é observacional: nunca pode interromper o Qwen.
+                registrar_log("[AVISO] Falha ao ler os tokens internos do Qwen.")
+
+        handle = talker.register_forward_hook(on_talker_forward)
+        registrar_log("Monitoramento de tokens de áudio conectado ao Talker.")
+        return handle, state
+
+    @staticmethod
+    def _audio_token_metrics(monitor) -> dict:
+        if monitor is None:
+            return {}
+        _handle, state = monitor
+        elapsed = max(time.monotonic() - state["started_at"], 0.001)
+        return {
+            "generated_audio_tokens": int(state["generated_audio_tokens"]),
+            "generated_audio_frames": int(state["generated_audio_frames"]),
+            "tokens_per_second": round(
+                state["generated_audio_tokens"] / elapsed, 2
+            ),
+            "inference_elapsed_seconds": round(elapsed, 2),
+        }
+
+    @staticmethod
+    def _detach_audio_token_monitor(monitor) -> None:
+        if monitor is not None:
+            try:
+                monitor[0].remove()
+            except Exception:
+                pass
+
     def synthesize(
         self,
         ref_audio_path: str,
@@ -176,20 +272,28 @@ class TTSService:
                 temperature=temperature,
                 prepared_text_chars=len(texto_final),
             )
-            with torch.inference_mode():
-                wavs, sr = self.model.generate_voice_clone(
-                    text=texto_final,
-                    language="Portuguese",
-                    ref_audio=audio_processado,
-                    ref_text=ref_text,
-                    temperature=temperature,
-                )
+            token_monitor = self._attach_audio_token_monitor(
+                progress_callback, scope="direct"
+            )
+            try:
+                with torch.inference_mode():
+                    wavs, sr = self.model.generate_voice_clone(
+                        text=texto_final,
+                        language="Portuguese",
+                        ref_audio=audio_processado,
+                        ref_text=ref_text,
+                        temperature=temperature,
+                    )
+            finally:
+                self._detach_audio_token_monitor(token_monitor)
 
             inference_seconds = time.monotonic() - inference_started
+            token_metrics = self._audio_token_metrics(token_monitor)
             report(
                 "inference_completed",
                 duration_seconds=round(inference_seconds, 3),
                 sample_rate=int(sr),
+                **token_metrics,
             )
 
             write_started = time.monotonic()
@@ -290,19 +394,30 @@ class TTSService:
                 )
                 gc.collect()
 
-                with torch.inference_mode():
-                    wavs, sr = self.model.generate_voice_clone(
-                        text=texto_chunk,
-                        language=idioma_qwen,
-                        ref_audio=audio_processado,
-                        ref_text=ref_text,
-                        temperature=temperature,
-                    )
+                token_monitor = self._attach_audio_token_monitor(
+                    progress_callback,
+                    scope="chunk",
+                    current_chunk=idx,
+                    total_chunks=len(chunks),
+                )
+                try:
+                    with torch.inference_mode():
+                        wavs, sr = self.model.generate_voice_clone(
+                            text=texto_chunk,
+                            language=idioma_qwen,
+                            ref_audio=audio_processado,
+                            ref_text=ref_text,
+                            temperature=temperature,
+                        )
+                finally:
+                    self._detach_audio_token_monitor(token_monitor)
 
                 chunk_duration = time.monotonic() - chunk_started_monotonic
+                token_metrics = self._audio_token_metrics(token_monitor)
                 chunk_history.append({
                     "text_chars": len(texto_chunk),
                     "duration_seconds": round(chunk_duration, 3),
+                    **token_metrics,
                 })
                 taxa_amostragem = sr
                 audio_array = wavs[0]
@@ -333,6 +448,7 @@ class TTSService:
                             if isinstance(item, dict)
                         ),
                         "last_chunk_duration_seconds": round(chunk_duration, 3),
+                        **token_metrics,
                         "chunk_history": list(chunk_history),
                     })
 
