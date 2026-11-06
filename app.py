@@ -137,6 +137,16 @@ def _resumo_progresso(job):
                 "direct_completed": "Síntese direta concluída",
             }
             etapa = etapas_diretas.get(event, "Sintetizando")
+            generated_tokens = progress.get("generated_audio_tokens")
+            token_rate = progress.get("tokens_per_second")
+            if event == "audio_token_progress" and isinstance(generated_tokens, (int, float)):
+                etapa = f"Gerando áudio com Qwen · {int(generated_tokens):,} tokens".replace(",", ".")
+                previsao = (
+                    f"{float(token_rate):.1f} tokens/s (média)"
+                    if isinstance(token_rate, (int, float))
+                    else "Contando tokens de áudio"
+                )
+                return etapa, previsao
             duracao = progress.get("inference_seconds")
             previsao = f"Inferência: {_formatar_duracao(float(duracao))}" if duracao is not None else "Tempo da inferência será informado ao concluir"
             return etapa, previsao
