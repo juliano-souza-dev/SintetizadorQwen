@@ -54,14 +54,14 @@ class TTSService:
         registrar_log("Arquivos do modelo verificados.")
         gc.collect()
         registrar_log(
-            "Carregando modelo na CPU (dtype=bfloat16, low_cpu_mem_usage=False)..."
+            "Carregando modelo na CPU (dtype=float32, low_cpu_mem_usage=True)..."
         )
         try:
             self.model = Qwen3TTSModel.from_pretrained(
                 str(caminho_modelo_local),
                 device_map=self.device,
-                dtype=torch.bfloat16,
-                low_cpu_mem_usage=False,
+                dtype=torch.float32,
+                low_cpu_mem_usage=True,
             )
         except Exception:
             registrar_log("[FATAL] Falha ao carregar Qwen3-TTS:")
@@ -211,7 +211,7 @@ class TTSService:
         ref_text: str,
         text_to_speak: str,
         output_path: str,
-        temperature: float = 0.65,
+        temperature: float | None = None,
         checkpoint: Callable[[], None] | None = None,
         progress_callback: Callable[[dict], None] | None = None,
     ) -> str:
@@ -288,13 +288,17 @@ class TTSService:
                 progress_callback, scope="direct"
             )
             try:
+                generation_kwargs = {}
+                if temperature is not None:
+                    generation_kwargs["temperature"] = temperature
+
                 with torch.inference_mode():
                     wavs, sr = self.model.generate_voice_clone(
                         text=texto_final,
                         language="Portuguese",
                         ref_audio=audio_processado,
                         ref_text=ref_text,
-                        temperature=temperature,
+                        **generation_kwargs,
                     )
             finally:
                 self._detach_audio_token_monitor(token_monitor)
@@ -414,12 +418,15 @@ class TTSService:
                 )
                 try:
                     with torch.inference_mode():
+                        generation_kwargs = {}
+                        if temperature is not None:
+                            generation_kwargs["temperature"] = temperature
                         wavs, sr = self.model.generate_voice_clone(
                             text=texto_chunk,
                             language=idioma_qwen,
                             ref_audio=audio_processado,
                             ref_text=ref_text,
-                            temperature=temperature,
+                            **generation_kwargs,
                         )
                 finally:
                     self._detach_audio_token_monitor(token_monitor)
