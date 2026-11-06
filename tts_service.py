@@ -347,7 +347,7 @@ class TTSService:
         ref_text: str,
         chunks: list[dict],
         output_path: str,
-        temperature: float = 0.65,
+        temperature: float | None = None,
         checkpoint: Callable[[], None] | None = None,
         progress_callback: Callable[[dict], None] | None = None,
     ) -> str:
