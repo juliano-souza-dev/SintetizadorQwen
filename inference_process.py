@@ -83,11 +83,10 @@ def _inference_child(
                         output_path=args["output_path"],
                         temperature=args["temperature"],
                         checkpoint=None,
+                        progress_callback=lambda data: connection.send({
+                            "type": "progress", "data": data
+                        }),
                     )
-                    connection.send({
-                        "type": "progress",
-                        "data": {"phase": "finalizing", "event": "direct_completed"},
-                    })
                 else:
                     raise ValueError(f"Operação de inferência desconhecida: {operation}")
 
@@ -244,6 +243,7 @@ class InferenceProcessClient:
         output_path: str,
         temperature: float = 0.65,
         checkpoint: Callable[[], None] | None = None,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> str:
         return self._run(
             "direct",
@@ -255,7 +255,7 @@ class InferenceProcessClient:
                 "temperature": temperature,
             },
             checkpoint=checkpoint,
-            progress_callback=None,
+            progress_callback=progress_callback,
         )
 
     def synthesize_chunks(
