@@ -125,6 +125,21 @@ def _resumo_progresso(job):
         current, total = int(progress.get("current_chunk") or 0), int(progress.get("total_chunks") or 0)
         completed = int(progress.get("completed_chunks") or 0)
         chunk_eta, task_eta, _, _ = _estimativas_progresso(job)
+        event = progress.get("event")
+        if not total:
+            etapas_diretas = {
+                "reference_preparation_started": "Preparando áudio de referência",
+                "reference_preparation_completed": "Referência preparada",
+                "inference_started": "Gerando áudio com Qwen",
+                "inference_completed": "Geração concluída, preparando WAV",
+                "audio_write_started": "Gravando arquivo WAV",
+                "audio_write_completed": "Arquivo WAV gravado",
+                "direct_completed": "Síntese direta concluída",
+            }
+            etapa = etapas_diretas.get(event, "Sintetizando")
+            duracao = progress.get("inference_seconds")
+            previsao = f"Inferência: {_formatar_duracao(float(duracao))}" if duracao is not None else "Tempo da inferência será informado ao concluir"
+            return etapa, previsao
         etapa = f"Chunk {current}/{total}" if total else "Sintetizando"
         percentual = f"{round((completed / total) * 100)}%" if total else "—"
         previsao = f"Chunk: {_formatar_duracao(chunk_eta)} · Total: {_formatar_duracao(task_eta)}" if task_eta is not None else "Estimando após o primeiro chunk"
@@ -437,6 +452,28 @@ with gr.Blocks(title="Qwen3-TTS · Síntese de Voz") as demo:
         chunk_eta_label = _formatar_duracao(chunk_eta) if chunk_eta is not None else "Calculando"
         task_eta_label = _formatar_duracao(task_eta) if task_eta is not None else "Calculando"
         texto_chunk = _html_seguro(progress.get("chunk_text", ""))
+        metricas_diretas = []
+        for chave, rotulo in (
+            ("preparation_seconds", "Preparação da referência"),
+            ("inference_seconds", "Inferência Qwen"),
+            ("audio_write_seconds", "Gravação do WAV"),
+            ("total_seconds", "Tempo total da síntese"),
+        ):
+            valor = progress.get(chave)
+            if isinstance(valor, (int, float)):
+                metricas_diretas.append(
+                    f"<span>{rotulo}: <b style='color:#E5E7EB'>{_formatar_duracao(float(valor))}</b></span>"
+                )
+        metricas_html = (
+            "<div style='margin-top:12px;padding:10px;background:#101319;border-radius:8px'>"
+            "<small style='color:#9CA3AF'>Medições da síntese direta</small>"
+            "<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin-top:6px'>"
+            + "".join(metricas_diretas) + "</div></div>"
+        ) if metricas_diretas else ""
+        evento_atual = _html_seguro(progress.get("event", ""))
+        evento_html = (
+            f"<div style='margin-top:8px;color:#9CA3AF;font-size:12px'>Último evento: <b style='color:#E5E7EB'>{evento_atual}</b></div>"
+        ) if evento_atual and not total_chunks else ""
         erro = f"<div style='margin-top:12px;color:#FCA5A5'><b>Erro:</b><pre style='white-space:pre-wrap'>{_html_seguro(job.error_message)}</pre></div>" if job.error_message else ""
         cancelamento = "<div style='margin-top:10px;color:#FBBF24'>Cancelamento solicitado. Aguardando o worker encerrar a etapa atual.</div>" if job.status == "running" and job.cancel_requested_at else ""
         exclusao = "<div style='margin-top:10px;color:#FBBF24'>Exclusão pendente. O registro e os arquivos serão removidos quando o worker parar.</div>" if job.deletion_requested else ""
@@ -460,6 +497,8 @@ with gr.Blocks(title="Qwen3-TTS · Síntese de Voz") as demo:
             <span>Tentativa: <b style="color:#E5E7EB">{job.attempt}/{job.max_attempts}</b></span><span>Worker: <b style="color:#E5E7EB">{_html_seguro(worker)}</b></span><span>Sinal do worker: <b style="color:#E5E7EB">{_html_seguro(sinal_worker)}</b></span><span>Modo: <b style="color:#E5E7EB">{_html_seguro(modo)}</b></span><span>Criado: <b style="color:#E5E7EB">{_html_seguro(criado)}</b></span>
           </div>
           {chunk_html}
+          {evento_html}
+          {metricas_html}
           <div style="margin-top:12px"><small style="color:#9CA3AF">Progresso</small><div>{_html_seguro(resumo)}</div></div>
           {cancelamento}{exclusao}
           <div style="margin-top:12px"><small style="color:#9CA3AF">Texto enviado para síntese</small><div style="white-space:pre-wrap;max-height:100px;overflow:auto;margin-top:4px">{_html_seguro(texto_job)}</div></div>
