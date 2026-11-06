@@ -470,6 +470,26 @@ with gr.Blocks(title="Qwen3-TTS · Síntese de Voz") as demo:
             "<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin-top:6px'>"
             + "".join(metricas_diretas) + "</div></div>"
         ) if metricas_diretas else ""
+        audio_tokens = progress.get("generated_audio_tokens")
+        audio_frames = progress.get("generated_audio_frames")
+        token_rate = progress.get("tokens_per_second")
+        token_elapsed = progress.get("inference_elapsed_seconds")
+        audio_token_html = ""
+        if isinstance(audio_tokens, (int, float)):
+            token_rate_label = f"{float(token_rate):.1f} tokens/s" if isinstance(token_rate, (int, float)) else "Calculando"
+            frames_label = f"{int(audio_frames):,}".replace(",", ".") if isinstance(audio_frames, (int, float)) else "—"
+            token_elapsed_label = _formatar_duracao(float(token_elapsed)) if isinstance(token_elapsed, (int, float)) else "—"
+            tokens_label = f"{int(audio_tokens):,}".replace(",", ".")
+            audio_token_html = (
+                "<div style='margin-top:12px;padding:12px;background:#101319;border:1px solid #303746;border-radius:8px'>"
+                "<small style='color:#9CA3AF'>Geração interna do Qwen · dados reais</small>"
+                "<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-top:8px'>"
+                f"<div><small style='color:#9CA3AF'>Tokens de áudio</small><div style='font-size:20px;font-weight:700'>{tokens_label}</div></div>"
+                f"<div><small style='color:#9CA3AF'>Frames gerados</small><div style='font-size:20px;font-weight:700'>{frames_label}</div></div>"
+                f"<div><small style='color:#9CA3AF'>Velocidade média</small><div style='font-size:20px;font-weight:700'>{token_rate_label}</div></div>"
+                f"<div><small style='color:#9CA3AF'>Tempo de inferência</small><div style='font-size:20px;font-weight:700'>{token_elapsed_label}</div></div>"
+                "</div><div style='margin-top:8px;color:#9CA3AF;font-size:11px'>O total de tokens não é conhecido antecipadamente; por isso, não exibimos porcentagem fictícia.</div></div>"
+            )
         evento_atual = _html_seguro(progress.get("event", ""))
         evento_html = (
             f"<div style='margin-top:8px;color:#9CA3AF;font-size:12px'>Último evento: <b style='color:#E5E7EB'>{evento_atual}</b></div>"
@@ -499,6 +519,7 @@ with gr.Blocks(title="Qwen3-TTS · Síntese de Voz") as demo:
           {chunk_html}
           {evento_html}
           {metricas_html}
+          {audio_token_html}
           <div style="margin-top:12px"><small style="color:#9CA3AF">Progresso</small><div>{_html_seguro(resumo)}</div></div>
           {cancelamento}{exclusao}
           <div style="margin-top:12px"><small style="color:#9CA3AF">Texto enviado para síntese</small><div style="white-space:pre-wrap;max-height:100px;overflow:auto;margin-top:4px">{_html_seguro(texto_job)}</div></div>
