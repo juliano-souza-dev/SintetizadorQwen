@@ -217,12 +217,24 @@ class TTSService:
     ) -> str:
         """Executa síntese direta e reporta o tempo de cada etapa."""
 
+        latest_token_metrics: dict[str, int | float] = {}
+
         def report(event: str, **details) -> None:
+            for key in (
+                "generated_audio_tokens",
+                "generated_audio_frames",
+                "tokens_per_second",
+                "inference_elapsed_seconds",
+            ):
+                value = details.get(key)
+                if isinstance(value, (int, float)):
+                    latest_token_metrics[key] = value
             data = {
                 "phase": "synthesizing",
                 "event": event,
                 "text_chars": len(text_to_speak or ""),
                 "timestamp": datetime.now(UTC).isoformat(),
+                **latest_token_metrics,
                 **details,
             }
             registrar_log(
