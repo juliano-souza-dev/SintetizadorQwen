@@ -117,7 +117,25 @@ class TTSService:
         output_path: str,
         temperature: float = 0.65,
         checkpoint: Callable[[], None] | None = None,
+        progress_callback: Callable[[dict], None] | None = None,
     ) -> str:
+        """Executa síntese direta e reporta o tempo de cada etapa."""
+
+        def report(event: str, **details) -> None:
+            data = {
+                "phase": "synthesizing",
+                "event": event,
+                "text_chars": len(text_to_speak or ""),
+                "timestamp": datetime.now(UTC).isoformat(),
+                **details,
+            }
+            registrar_log(
+                f"DIRECT_SYNTHESIS event={event} details={details}"
+            )
+            if progress_callback is not None:
+                progress_callback(data)
+
+        total_started = time.monotonic()
         if not ref_audio_path or not os.path.exists(ref_audio_path):
             raise ValueError(
                 f"Áudio de referência não encontrado: {ref_audio_path}"
@@ -127,8 +145,15 @@ class TTSService:
             checkpoint()
 
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        preparation_started = time.monotonic()
+        report("reference_preparation_started")
         audio_processado, is_temp = self._preparar_audio_referencia(
             ref_audio_path, output_path
+        )
+        preparation_seconds = time.monotonic() - preparation_started
+        report(
+            "reference_preparation_completed",
+            duration_seconds=round(preparation_seconds, 3),
         )
 
         try:
@@ -138,9 +163,19 @@ class TTSService:
             if checkpoint:
                 checkpoint()
 
-            registrar_log(f"Iniciando síntese direta: '{texto_final[:45]}...'")
+            registrar_log(
+                f"Iniciando síntese direta ({len(texto_final)} caracteres): "
+                f"'{texto_final[:80]}'"
+            )
             gc.collect()
 
+            inference_started = time.monotonic()
+            report(
+                "inference_started",
+                language="Portuguese",
+                temperature=temperature,
+                prepared_text_chars=len(texto_final),
+            )
             with torch.inference_mode():
                 wavs, sr = self.model.generate_voice_clone(
                     text=texto_final,
@@ -150,9 +185,33 @@ class TTSService:
                     temperature=temperature,
                 )
 
+            inference_seconds = time.monotonic() - inference_started
+            report(
+                "inference_completed",
+                duration_seconds=round(inference_seconds, 3),
+                sample_rate=int(sr),
+            )
+
+            write_started = time.monotonic()
+            report("audio_write_started")
             sf.write(output_path, wavs[0], sr)
+            write_seconds = time.monotonic() - write_started
+            report(
+                "audio_write_completed",
+                duration_seconds=round(write_seconds, 3),
+                output_path=output_path,
+            )
             registrar_log(f"Áudio salvo em: {output_path}")
             del wavs
+
+            total_seconds = time.monotonic() - total_started
+            report(
+                "direct_completed",
+                preparation_seconds=round(preparation_seconds, 3),
+                inference_seconds=round(inference_seconds, 3),
+                audio_write_seconds=round(write_seconds, 3),
+                total_seconds=round(total_seconds, 3),
+            )
             return output_path
         finally:
             if is_temp and os.path.exists(audio_processado):
